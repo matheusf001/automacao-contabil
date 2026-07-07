@@ -25,6 +25,7 @@ export default function Dashboard() {
   const [regras, setRegras] = useState([]);
   const [layouts, setLayouts] = useState([]);
   const [currentLayoutId, setCurrentLayoutId] = useState(null);
+  const [contaBancaria, setContaBancaria] = useState(null);
 
   const [contasSearch, setContasSearch] = useState('');
   const [extratoText, setExtratoText] = useState('');
@@ -60,6 +61,28 @@ export default function Dashboard() {
   useEffect(() => {
     if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); }
   }, [currentEmpresaId]);
+
+  useEffect(() => {
+    if (currentEmpresaId && currentLayoutId) loadContaBancaria(currentEmpresaId, currentLayoutId);
+  }, [currentEmpresaId, currentLayoutId]);
+
+  async function loadContaBancaria(empresaId, layoutId) {
+    const { data, error } = await supabase.from('empresa_layout_conta').select('conta_codigo')
+      .eq('empresa_id', empresaId).eq('layout_id', layoutId).maybeSingle();
+    if (error) { console.error(error); return; }
+    if (data) { setContaBancaria(data.conta_codigo); return; }
+    const emp = empresas.find(e => e.id === empresaId);
+    setContaBancaria(emp?.conta_banco_fixa || null);
+  }
+
+  async function salvarContaBancaria(codigo) {
+    setContaBancaria(codigo || null);
+    if (!codigo || !currentEmpresaId || !currentLayoutId) return;
+    const { error } = await supabase.from('empresa_layout_conta')
+      .upsert({ empresa_id: currentEmpresaId, layout_id: currentLayoutId, conta_codigo: codigo }, { onConflict: 'empresa_id,layout_id' });
+    if (error) { alert('Erro ao salvar conta bancária: ' + error.message); return; }
+    flash('salvo ✓');
+  }
 
   async function loadEmpresas() {
     const { data, error } = await supabase.from('empresas').select('*').order('nome');
@@ -246,14 +269,13 @@ export default function Dashboard() {
 
   // ---------- EXTRATO ----------
   function processarExtrato() {
-    const emp = empresas.find(e => e.id === currentEmpresaId);
-    if (!emp?.conta_banco_fixa) {
-      alert('Configure a "conta banco (contrapartida fixa)" desta empresa na aba REGRAS antes de processar.');
+    if (!contaBancaria) {
+      alert('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.');
       return;
     }
     if (!currentLayout) { alert('Selecione um layout de banco na aba EXTRATO.'); return; }
     const rows = parseExtrato(extratoText, currentLayout);
-    setProcessedRows(classificar(rows, regras, emp.conta_banco_fixa));
+    setProcessedRows(classificar(rows, regras, contaBancaria));
   }
 
   function exportarImportacao(onlyMatched) {
@@ -358,6 +380,16 @@ export default function Dashboard() {
               <button className="btn secondary" onClick={novoLayout}>+ Novo layout</button>
               <button className="btn danger" onClick={excluirLayout}>Excluir layout</button>
             </div>
+            {currentLayout && (
+              <div className="row">
+                <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Conta bancária desta importação:</label>
+                <input type="text" list="contas-datalist" placeholder="buscar conta…" style={{ minWidth: 280 }}
+                  defaultValue={contaBancaria ? `${contaBancaria} — ${findContaDesc(contaBancaria)}` : ''}
+                  key={`${currentEmpresaId}-${currentLayoutId}`}
+                  onBlur={e => salvarContaBancaria(extractCodigoFromPicked(e.target.value))} />
+                <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
+              </div>
+            )}
             {currentLayout && (
               <>
                 <div className="row">
