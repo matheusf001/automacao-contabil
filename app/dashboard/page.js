@@ -220,7 +220,7 @@ export default function Dashboard() {
   }
 
   // ---------- LAYOUTS ----------
-  const currentLayout = layouts.find(l => l.id === currentLayoutId) || null;
+  const currentLayout = layouts.find(l => String(l.id) === String(currentLayoutId)) || null;
   async function novoLayout() {
     const nome = prompt('Nome do novo layout (ex: nome do banco):');
     if (!nome || !nome.trim()) return;
