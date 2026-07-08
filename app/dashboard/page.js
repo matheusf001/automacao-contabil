@@ -298,24 +298,30 @@ export default function Dashboard() {
     if (!currentLayout) { alert('Selecione um layout de banco na aba EXTRATO.'); return; }
     setProcessando(true);
     setConfirmado(false);
-    const regrasAtuais = regrasOverride || regras;
-    const rows = parseExtrato(extratoText, currentLayout);
-    const classificado = classificar(rows, regrasAtuais, contaBancaria);
+    try {
+      const regrasAtuais = regrasOverride || regras;
+      const rows = parseExtrato(extratoText, currentLayout);
+      const classificado = classificar(rows, regrasAtuais, contaBancaria);
 
-    const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
-    const fps = withFingerprint.map(r => r.fingerprint);
-    let existentes = new Set();
-    const chunkSize = 200;
-    for (let i = 0; i < fps.length; i += chunkSize) {
-      const chunk = fps.slice(i, i + chunkSize);
-      const { data, error } = await supabase.from('lancamentos_importados').select('fingerprint')
-        .eq('empresa_id', currentEmpresaId).in('fingerprint', chunk);
-      if (error) { console.error(error); continue; }
-      (data || []).forEach(d => existentes.add(d.fingerprint));
+      const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
+      const fps = withFingerprint.map(r => r.fingerprint);
+      let existentes = new Set();
+      const chunkSize = 200;
+      for (let i = 0; i < fps.length; i += chunkSize) {
+        const chunk = fps.slice(i, i + chunkSize);
+        const { data, error } = await supabase.from('lancamentos_importados').select('fingerprint')
+          .eq('empresa_id', currentEmpresaId).in('fingerprint', chunk);
+        if (error) { console.error(error); continue; }
+        (data || []).forEach(d => existentes.add(d.fingerprint));
+      }
+      const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
+      setProcessedRows(marcado);
+    } catch (err) {
+      console.error(err);
+      alert('Deu um erro ao processar o extrato: ' + err.message + '\n\nConfira se as colunas do layout (Data/Histórico/Valor) estão configuradas corretamente.');
+    } finally {
+      setProcessando(false);
     }
-    const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
-    setProcessedRows(marcado);
-    setProcessando(false);
   }
 
   function appendWord(word) {
@@ -508,34 +514,34 @@ export default function Dashboard() {
               </div>
             )}
             {isAdmin && currentLayout && (
-              <>
+              <div key={currentLayoutId}>
                 <div className="row">
                   <label style={{ fontSize: 12.5 }}>Separador:</label>
-                  <select value={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
+                  <select defaultValue={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
                     <option value="auto">Auto (tab ou ;)</option>
                     <option value="tab">Tabulação</option>
                     <option value=";">Ponto e vírgula ( ; )</option>
                     <option value=",">Vírgula ( , )</option>
                   </select>
                   <label style={{ fontSize: 12.5 }}>Col. Data:</label>
-                  <input type="number" style={{ width: 56 }} value={currentLayout.col_data} onChange={e => salvarLayout({ col_data: parseInt(e.target.value) || 0 })} />
+                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_data} onBlur={e => salvarLayout({ col_data: parseInt(e.target.value) || 0 })} />
                   <label style={{ fontSize: 12.5 }}>Col. Histórico:</label>
-                  <input type="number" style={{ width: 56 }} value={currentLayout.col_historico} onChange={e => salvarLayout({ col_historico: parseInt(e.target.value) || 0 })} />
+                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_historico} onBlur={e => salvarLayout({ col_historico: parseInt(e.target.value) || 0 })} />
                   <label style={{ fontSize: 12.5 }}>Col. Valor:</label>
-                  <input type="number" style={{ width: 56 }} value={currentLayout.col_valor} onChange={e => salvarLayout({ col_valor: parseInt(e.target.value) || 0 })} />
+                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_valor} onBlur={e => salvarLayout({ col_valor: parseInt(e.target.value) || 0 })} />
                 </div>
                 <div className="row">
                   <label style={{ fontSize: 12.5 }}>C/D por:</label>
-                  <select value={currentLayout.cd_mode} onChange={e => salvarLayout({ cd_mode: e.target.value })}>
+                  <select defaultValue={currentLayout.cd_mode} onChange={e => salvarLayout({ cd_mode: e.target.value })}>
                     <option value="coluna">Coluna específica</option>
                     <option value="sinal">Sinal do valor (negativo = débito)</option>
                   </select>
                   <label style={{ fontSize: 12.5 }}>Col. C/D:</label>
-                  <input type="number" style={{ width: 56 }} value={currentLayout.col_cd} onChange={e => salvarLayout({ col_cd: parseInt(e.target.value) || 0 })} />
+                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_cd} onBlur={e => salvarLayout({ col_cd: parseInt(e.target.value) || 0 })} />
                   <label style={{ fontSize: 12.5 }}>Col. Detalhamento (-1 = nenhuma):</label>
-                  <input type="number" style={{ width: 56 }} value={currentLayout.col_detalhamento} onChange={e => salvarLayout({ col_detalhamento: parseInt(e.target.value) })} />
+                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_detalhamento} onBlur={e => salvarLayout({ col_detalhamento: parseInt(e.target.value) })} />
                 </div>
-              </>
+              </div>
             )}
           </div>
 
