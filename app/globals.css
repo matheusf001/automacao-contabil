@@ -75,3 +75,5 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 .login-wrap input{ width:100%; margin-bottom:14px; }
 .login-error{ background:var(--amber-bg); color:var(--amber); padding:8px 10px; border-radius:4px; font-size:12px; margin-bottom:14px; }
 .center-loading{ text-align:center; padding:80px 20px; color:var(--ink-soft); font-family:var(--mono); font-size:13px; }
+.word-token{ cursor:pointer; border-radius:3px; padding:0 1px; }
+.word-token:hover{ background: var(--teal-bg); text-decoration:underline; color:var(--teal-dark); }

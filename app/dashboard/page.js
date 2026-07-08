@@ -49,6 +49,8 @@ export default function Dashboard() {
   const [destEmpresaImport, setDestEmpresaImport] = useState(null);
   const [saveFlag, setSaveFlag] = useState('');
   const [historico, setHistorico] = useState([]);
+  const [keywordDraft, setKeywordDraft] = useState('');
+  const [codigoDraft, setCodigoDraft] = useState('');
 
   const fileInputRef = useRef(null);
   const pasteRef = useRef(null);
@@ -291,13 +293,14 @@ export default function Dashboard() {
   }
 
   // ---------- EXTRATO ----------
-  async function processarExtrato() {
+  async function processarExtrato(regrasOverride) {
     if (!contaBancaria) { alert('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.'); return; }
     if (!currentLayout) { alert('Selecione um layout de banco na aba EXTRATO.'); return; }
     setProcessando(true);
     setConfirmado(false);
+    const regrasAtuais = regrasOverride || regras;
     const rows = parseExtrato(extratoText, currentLayout);
-    const classificado = classificar(rows, regras, contaBancaria);
+    const classificado = classificar(rows, regrasAtuais, contaBancaria);
 
     const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
     const fps = withFingerprint.map(r => r.fingerprint);
@@ -313,6 +316,45 @@ export default function Dashboard() {
     const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
     setProcessedRows(marcado);
     setProcessando(false);
+  }
+
+  function appendWord(word) {
+    const limpo = word.trim();
+    if (!limpo) return;
+    setKeywordDraft(prev => {
+      if (!prev) return limpo;
+      const jaTem = prev.split(/\s+/).some(w => w.toUpperCase() === limpo.toUpperCase());
+      return jaTem ? prev : prev + ' ' + limpo;
+    });
+  }
+
+  function renderClickableText(text) {
+    if (!text) return null;
+    const parts = text.split(/(\s+)/);
+    return parts.map((part, idx) => {
+      if (/^\s*$/.test(part)) return part;
+      return (
+        <span key={idx} className="word-token" title="Clicar adiciona à palavra-chave da nova regra"
+          onClick={() => appendWord(part)}>{part}</span>
+      );
+    });
+  }
+
+  async function salvarRegraDraft() {
+    const codigo = extractCodigoFromPicked(codigoDraft);
+    if (!keywordDraft.trim()) { alert('Monte a palavra-chave clicando nas palavras do histórico/detalhamento, ou digite manualmente.'); return; }
+    if (!codigo) { alert('Escolha a conta contábil da regra.'); return; }
+    const maxOrdem = regras.reduce((m, r) => Math.max(m, r.ordem || 0), 0);
+    const { error } = await supabase.from('regras').insert({
+      empresa_id: currentEmpresaId, palavra_chave: keywordDraft.trim(), codigo, descricao: '',
+      ordem: maxOrdem + 1, updated_by: userEmail, updated_at: new Date().toISOString(),
+    });
+    if (error) { alert('Erro ao salvar regra: ' + error.message); return; }
+    setKeywordDraft(''); setCodigoDraft('');
+    const { data: novasRegras } = await supabase.from('regras').select('*').eq('empresa_id', currentEmpresaId).order('ordem');
+    setRegras(novasRegras || []);
+    flash('regra criada ✓');
+    if (processedRows.length > 0) await processarExtrato(novasRegras || []);
   }
 
   async function confirmarImportacao() {
@@ -347,12 +389,12 @@ export default function Dashboard() {
   }
 
   function exportarImportacao(onlyMatched) {
-    let csv = 'DATA;CONTA CREDORA;CONTA DEVEDORA;VALOR;HISTORICO;STATUS\n';
+    let csv = 'DATA;CONTA DEVEDORA;CONTA CREDORA;VALOR;HISTORICO;STATUS\n';
     processedRows.forEach(r => {
       if (r.status === 'duplicado') return;
       if (onlyMatched && r.status !== 'automatico') return;
       const historicoFull = r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico;
-      csv += `${r.data};${r.contaCredora};${r.contaDevedora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.status}\n`;
+      csv += `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.status}\n`;
     });
     downloadFile(csv, (onlyMatched ? 'importacao_classificados_' : 'importacao_') + currentEmpresaId + '.csv');
   }
@@ -507,6 +549,22 @@ export default function Dashboard() {
 
           {processedRows.length > 0 && (
             <>
+              <div className="card">
+                <h3>Criar regra a partir do extrato</h3>
+                <p className="hint" style={{ marginBottom: 10 }}>Clique em palavras do histórico/detalhamento na tabela abaixo para montar a palavra-chave, escolha a conta e salve — sem sair desta tela.</p>
+                <div className="row" style={{ marginTop: 0 }}>
+                  <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Palavra-chave:</label>
+                  <input type="text" style={{ minWidth: 320 }} value={keywordDraft} onChange={e => setKeywordDraft(e.target.value)} placeholder="clique nas palavras abaixo…" />
+                  <button className="btn secondary" onClick={() => setKeywordDraft('')}>Limpar</button>
+                </div>
+                <div className="row">
+                  <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Conta contábil:</label>
+                  <input type="text" list="contas-datalist" style={{ minWidth: 280 }} value={codigoDraft} onChange={e => setCodigoDraft(e.target.value)} placeholder="buscar conta…" />
+                  <button className="btn teal" onClick={salvarRegraDraft} disabled={!keywordDraft.trim() || !codigoDraft.trim()}>Salvar regra e reclassificar</button>
+                  <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
+                </div>
+              </div>
+
               <div className="stats">
                 <div className="stat">{processedRows.length} lançamentos</div>
                 <div className="stat ok">{processedRows.filter(r => r.status === 'automatico').length} classificados</div>
@@ -525,13 +583,15 @@ export default function Dashboard() {
                 )}
               </div>
               <div className="table-wrap"><table>
-                <thead><tr><th>DATA</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>DETALHAMENTO</th><th>C/D</th><th className="num">CRED.</th><th className="num">DEV.</th><th>STATUS</th></tr></thead>
+                <thead><tr><th>DATA</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>DETALHAMENTO</th><th>C/D</th><th className="num">DEV.</th><th className="num">CRED.</th><th>STATUS</th></tr></thead>
                 <tbody>
                   {processedRows.map((r, i) => (
                     <tr key={i} className={r.status !== 'automatico' ? 'warn-row' : ''}>
-                      <td className="mono">{r.data}</td><td className="num">{r.valor}</td><td>{r.historico}</td>
-                      <td>{r.detalhamento}</td><td className="mono">{r.cd}</td>
-                      <td className="num">{r.contaCredora}</td><td className="num">{r.contaDevedora}</td>
+                      <td className="mono">{r.data}</td><td className="num">{r.valor}</td>
+                      <td>{renderClickableText(r.historico)}</td>
+                      <td>{renderClickableText(r.detalhamento)}</td>
+                      <td className="mono">{r.cd}</td>
+                      <td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
                       <td>
                         {r.status === 'automatico' && <span className="badge ok">✔ automatico</span>}
                         {r.status === 'sem match' && <span className="badge warn">⚠ sem match</span>}
@@ -627,13 +687,13 @@ export default function Dashboard() {
               </div>
               <p className="hint">Lançamentos marcados como "duplicado" não entram no arquivo exportado.</p>
               <div className="table-wrap" style={{ marginTop: 14 }}><table>
-                <thead><tr><th>DATA</th><th className="num">CRED.</th><th className="num">DEV.</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>STATUS</th></tr></thead>
+                <thead><tr><th>DATA</th><th className="num">DEV.</th><th className="num">CRED.</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>STATUS</th></tr></thead>
                 <tbody>
                   {processedRows.map((r, i) => {
                     const historicoFull = r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico;
                     return (
                       <tr key={i} className={r.status !== 'automatico' ? 'warn-row' : ''}>
-                        <td className="mono">{r.data}</td><td className="num">{r.contaCredora}</td><td className="num">{r.contaDevedora}</td>
+                        <td className="mono">{r.data}</td><td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
                         <td className="num">{r.valor}</td><td>{historicoFull}</td>
                         <td>{r.status === 'automatico' ? <span className="badge ok">✔</span> : <span className="badge warn">⚠ {r.status}</span>}</td>
                       </tr>
