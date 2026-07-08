@@ -51,6 +51,13 @@ export default function Dashboard() {
   const [historico, setHistorico] = useState([]);
   const [keywordDraft, setKeywordDraft] = useState('');
   const [codigoDraft, setCodigoDraft] = useState('');
+  const [toasts, setToasts] = useState([]);
+
+  function notify(message, type = 'error') {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }
 
   const fileInputRef = useRef(null);
   const pasteRef = useRef(null);
@@ -112,7 +119,7 @@ export default function Dashboard() {
     const { data, error } = await supabase.from('layouts_banco').select('*').order('nome');
     if (error) { console.error(error); return; }
     setLayouts(data || []);
-    if (data && data.length) setCurrentLayoutId(data[0].id);
+    setCurrentLayoutId(prev => prev || (data && data.length ? data[0].id : null));
   }
 
   async function loadContaBancaria(empresaId, layoutId) {
@@ -129,7 +136,7 @@ export default function Dashboard() {
     if (!codigo || !currentEmpresaId || !currentLayoutId) return;
     const { error } = await supabase.from('empresa_layout_conta')
       .upsert({ empresa_id: currentEmpresaId, layout_id: currentLayoutId, conta_codigo: codigo }, { onConflict: 'empresa_id,layout_id' });
-    if (error) { alert('Erro ao salvar conta bancária: ' + error.message); return; }
+    if (error) { notify('Erro ao salvar conta bancária: ' + error.message); return; }
     flash('salvo ✓');
   }
 
@@ -147,22 +154,23 @@ export default function Dashboard() {
     const nome = prompt('Nome da nova empresa:');
     if (!nome || !nome.trim()) return;
     const { data, error } = await supabase.from('empresas').insert({ nome: nome.trim() }).select().single();
-    if (error) { alert('Erro ao criar empresa: ' + error.message); return; }
+    if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
     await loadEmpresas();
     setCurrentEmpresaId(data.id);
+    notify(`Empresa "${nome.trim()}" criada!`, 'success');
   }
   async function renomearEmpresa(emp) {
     const novoNome = prompt('Novo nome da empresa:', emp.nome);
     if (!novoNome || !novoNome.trim()) return;
     const { error } = await supabase.from('empresas').update({ nome: novoNome.trim() }).eq('id', emp.id);
-    if (error) { alert('Erro ao renomear: ' + error.message); return; }
+    if (error) { notify('Erro ao renomear: ' + error.message); return; }
     loadEmpresas();
   }
   async function excluirEmpresa(emp) {
-    if (empresas.length <= 1) { alert('Precisa manter ao menos uma empresa.'); return; }
+    if (empresas.length <= 1) { notify('Precisa manter ao menos uma empresa.'); return; }
     if (!confirm(`Excluir "${emp.nome}" e todos os dados dela? Não pode ser desfeito.`)) return;
     const { error } = await supabase.from('empresas').delete().eq('id', emp.id);
-    if (error) { alert('Erro ao excluir: ' + error.message); return; }
+    if (error) { notify('Erro ao excluir: ' + error.message); return; }
     if (currentEmpresaId === emp.id) setCurrentEmpresaId(null);
     loadEmpresas();
   }
@@ -214,19 +222,19 @@ export default function Dashboard() {
       empresa_id: currentEmpresaId, palavra_chave: '', codigo: 0, descricao: '', ordem: maxOrdem + 1,
       updated_by: userEmail, updated_at: new Date().toISOString(),
     });
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     loadRegras(currentEmpresaId);
   }
   async function updateRegra(regra, field, value) {
     const patch = { [field]: field === 'codigo' ? (parseInt(value) || 0) : value, updated_by: userEmail, updated_at: new Date().toISOString() };
     const { error } = await supabase.from('regras').update(patch).eq('id', regra.id);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     flash('salvo ✓');
     loadRegras(currentEmpresaId);
   }
   async function deleteRegra(regra) {
     const { error } = await supabase.from('regras').delete().eq('id', regra.id);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     loadRegras(currentEmpresaId);
   }
   async function moveRegra(regra, direction) {
@@ -252,18 +260,18 @@ export default function Dashboard() {
   // ---------- PLANO DE CONTAS (edição manual, admin) ----------
   async function addContaManual() {
     const { error } = await supabase.from('plano_contas').insert({ empresa_id: currentEmpresaId, codigo: 0, classificacao: '', descricao: '', updated_by: userEmail, updated_at: new Date().toISOString() });
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     loadPlanoContas(currentEmpresaId);
   }
   async function updateConta(conta, field, value) {
     const patch = { [field]: field === 'codigo' ? (parseInt(value) || 0) : value, updated_by: userEmail, updated_at: new Date().toISOString() };
     const { error } = await supabase.from('plano_contas').update(patch).eq('id', conta.id);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     flash('salvo ✓');
   }
   async function deleteConta(conta) {
     const { error } = await supabase.from('plano_contas').delete().eq('id', conta.id);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     loadPlanoContas(currentEmpresaId);
   }
 
@@ -274,12 +282,12 @@ export default function Dashboard() {
     if (!nome || !nome.trim()) return;
     const base = currentLayout || { separador: 'auto', col_data: 0, col_historico: 2, col_valor: 1, cd_mode: 'coluna', col_cd: 3, col_detalhamento: 4 };
     const { data, error } = await supabase.from('layouts_banco').insert({ ...base, id: undefined, nome: nome.trim() }).select().single();
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     await loadLayouts();
     setCurrentLayoutId(data.id);
   }
   async function excluirLayout() {
-    if (layouts.length <= 1) { alert('Precisa manter ao menos um layout.'); return; }
+    if (layouts.length <= 1) { notify('Precisa manter ao menos um layout.'); return; }
     if (!confirm(`Excluir layout "${currentLayout.nome}"?`)) return;
     await supabase.from('layouts_banco').delete().eq('id', currentLayoutId);
     setCurrentLayoutId(null);
@@ -287,15 +295,15 @@ export default function Dashboard() {
   }
   async function salvarLayout(patch) {
     const { error } = await supabase.from('layouts_banco').update(patch).eq('id', currentLayoutId);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (error) { notify('Erro: ' + error.message); return; }
     flash('salvo ✓');
     loadLayouts();
   }
 
   // ---------- EXTRATO ----------
   async function processarExtrato(regrasOverride) {
-    if (!contaBancaria) { alert('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.'); return; }
-    if (!currentLayout) { alert('Selecione um layout de banco na aba EXTRATO.'); return; }
+    if (!contaBancaria) { notify('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.'); return; }
+    if (!currentLayout) { notify('Selecione um layout de banco na aba EXTRATO.'); return; }
     setProcessando(true);
     setConfirmado(false);
     try {
@@ -318,7 +326,7 @@ export default function Dashboard() {
       setProcessedRows(marcado);
     } catch (err) {
       console.error(err);
-      alert('Deu um erro ao processar o extrato: ' + err.message + '\n\nConfira se as colunas do layout (Data/Histórico/Valor) estão configuradas corretamente.');
+      notify('Deu um erro ao processar o extrato: ' + err.message + '\n\nConfira se as colunas do layout (Data/Histórico/Valor) estão configuradas corretamente.');
     } finally {
       setProcessando(false);
     }
@@ -348,25 +356,25 @@ export default function Dashboard() {
 
   async function salvarRegraDraft() {
     const codigo = extractCodigoFromPicked(codigoDraft);
-    if (!keywordDraft.trim()) { alert('Monte a palavra-chave clicando nas palavras do histórico/detalhamento, ou digite manualmente.'); return; }
-    if (!codigo) { alert('Escolha a conta contábil da regra.'); return; }
+    if (!keywordDraft.trim()) { notify('Monte a palavra-chave clicando nas palavras do histórico/detalhamento, ou digite manualmente.'); return; }
+    if (!codigo) { notify('Escolha a conta contábil da regra.'); return; }
     const maxOrdem = regras.reduce((m, r) => Math.max(m, r.ordem || 0), 0);
     const { error } = await supabase.from('regras').insert({
       empresa_id: currentEmpresaId, palavra_chave: keywordDraft.trim(), codigo, descricao: '',
       ordem: maxOrdem + 1, updated_by: userEmail, updated_at: new Date().toISOString(),
     });
-    if (error) { alert('Erro ao salvar regra: ' + error.message); return; }
+    if (error) { notify('Erro ao salvar regra: ' + error.message); return; }
     setKeywordDraft(''); setCodigoDraft('');
     const { data: novasRegras } = await supabase.from('regras').select('*').eq('empresa_id', currentEmpresaId).order('ordem');
     setRegras(novasRegras || []);
-    flash('regra criada ✓');
+    notify('Regra criada! Reclassificando o extrato…', 'success');
     if (processedRows.length > 0) await processarExtrato(novasRegras || []);
   }
 
   async function confirmarImportacao() {
     if (processedRows.length === 0) return;
     const naoDuplicados = processedRows.filter(r => r.status !== 'duplicado');
-    if (naoDuplicados.length === 0) { alert('Todos os lançamentos já foram importados antes — nada novo para salvar.'); return; }
+    if (naoDuplicados.length === 0) { notify('Todos os lançamentos já foram importados antes — nada novo para salvar.'); return; }
 
     const { data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert({
       empresa_id: currentEmpresaId,
@@ -378,7 +386,7 @@ export default function Dashboard() {
       total_duplicados: processedRows.filter(r => r.status === 'duplicado').length,
       processado_por: userEmail,
     }).select().single();
-    if (errExtrato) { alert('Erro ao salvar histórico: ' + errExtrato.message); return; }
+    if (errExtrato) { notify('Erro ao salvar histórico: ' + errExtrato.message); return; }
 
     const linhas = naoDuplicados.map(r => ({
       empresa_id: currentEmpresaId, extrato_id: extrato.id, fingerprint: r.fingerprint,
@@ -388,10 +396,11 @@ export default function Dashboard() {
     const chunkSize = 300;
     for (let i = 0; i < linhas.length; i += chunkSize) {
       const { error } = await supabase.from('lancamentos_importados').insert(linhas.slice(i, i + chunkSize));
-      if (error) { alert('Erro ao salvar lançamentos: ' + error.message); return; }
+      if (error) { notify('Erro ao salvar lançamentos: ' + error.message); return; }
     }
     setConfirmado(true);
     loadHistorico(currentEmpresaId);
+    notify('Importação confirmada e salva no histórico!', 'success');
   }
 
   function exportarImportacao(onlyMatched) {
@@ -415,6 +424,12 @@ export default function Dashboard() {
 
   return (
     <div className="app">
+      <div className="toast-container">
+        {toasts.map(t => (
+          <div key={t.id} className={'toast toast-' + t.type}>{t.message}</div>
+        ))}
+      </div>
+
       <datalist id="contas-datalist">
         {planoContas.map(c => <option key={c.id} value={`${c.codigo} — ${c.descricao}`} />)}
       </datalist>
@@ -439,6 +454,7 @@ export default function Dashboard() {
           </button>
         ))}
       </nav>
+      <div key={tab} className="fade-in">
 
       {tab === 'empresas' && (
         <section className="panel">
@@ -549,7 +565,9 @@ export default function Dashboard() {
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); }}
             placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tC\tCLIENTE XYZ LTDA'} />
           <div className="row">
-            <button className="btn teal" onClick={processarExtrato} disabled={processando}>{processando ? 'Processando…' : 'Processar extrato'}</button>
+            <button className="btn teal" onClick={processarExtrato} disabled={processando}>
+              {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
+            </button>
             <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); }}>Limpar</button>
           </div>
 
@@ -748,6 +766,8 @@ export default function Dashboard() {
           )}
         </section>
       )}
+
+      </div>
 
       <div className="footer-note">Dados salvos no Supabase — acessíveis de qualquer lugar por qualquer login autorizado.</div>
     </div>

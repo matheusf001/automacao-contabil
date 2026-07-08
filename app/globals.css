@@ -77,3 +77,42 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 .center-loading{ text-align:center; padding:80px 20px; color:var(--ink-soft); font-family:var(--mono); font-size:13px; }
 .word-token{ cursor:pointer; border-radius:3px; padding:0 1px; }
 .word-token:hover{ background: var(--teal-bg); text-decoration:underline; color:var(--teal-dark); }
+
+/* --- animações e interatividade --- */
+@keyframes fadeIn { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: translateY(0); } }
+.fade-in{ animation: fadeIn 0.25s ease-out; }
+
+button.btn{ transition: transform 0.12s ease, opacity 0.12s ease, box-shadow 0.12s ease; }
+button.btn:hover:not(:disabled){ transform: translateY(-1px); box-shadow: 0 3px 10px rgba(22,40,63,0.18); }
+button.btn:active:not(:disabled){ transform: translateY(0); box-shadow: none; }
+
+.tab-btn{ transition: background 0.15s ease, color 0.15s ease; }
+.empresa-row{ transition: border-color 0.15s ease, background 0.15s ease; }
+input.cell-edit, input[type=text], input[type=search], input[type=number], select{ transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+input.cell-edit:focus, input[type=text]:focus, input[type=search]:focus, input[type=number]:focus, select:focus{
+  outline: none; border-color: var(--teal); box-shadow: 0 0 0 2px var(--teal-bg);
+}
+.word-token{ transition: background 0.1s ease; }
+
+section.panel{ box-shadow: 0 2px 14px rgba(22,40,63,0.05); }
+.card{ transition: box-shadow 0.15s ease; }
+.card:hover{ box-shadow: 0 2px 10px rgba(22,40,63,0.06); }
+
+/* spinner */
+.spinner{
+  display:inline-block; width:11px; height:11px; border-radius:50%;
+  border:2px solid rgba(255,255,255,0.4); border-top-color:#fff;
+  animation: spin 0.7s linear infinite; margin-right:6px; vertical-align:middle;
+}
+@keyframes spin{ to { transform: rotate(360deg); } }
+
+/* toasts */
+.toast-container{ position:fixed; bottom:20px; right:20px; z-index:1000; display:flex; flex-direction:column; gap:8px; max-width:340px; }
+.toast{
+  padding:11px 16px; border-radius:6px; font-size:12.5px; font-family:var(--sans);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15); animation: toastIn 0.25s ease-out; color:#fff;
+}
+@keyframes toastIn{ from{ opacity:0; transform: translateX(20px); } to { opacity:1; transform: translateX(0); } }
+.toast-error{ background: #A33; }
+.toast-success{ background: var(--teal-dark); }
+.toast-info{ background: var(--ink); }
