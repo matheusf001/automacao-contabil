@@ -565,7 +565,7 @@ export default function Dashboard() {
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); }}
             placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tC\tCLIENTE XYZ LTDA'} />
           <div className="row">
-            <button className="btn teal" onClick={processarExtrato} disabled={processando}>
+            <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
             <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); }}>Limpar</button>
