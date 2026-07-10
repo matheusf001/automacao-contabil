@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import * as XLSX from 'xlsx';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile } from '@/lib/planoParser';
 
 const TABS = ['empresas', 'extrato', 'regras', 'contas', 'importacao', 'historico'];
@@ -22,6 +23,18 @@ function fmtData(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleString('pt-BR');
+}
+
+function compararClassificacao(a, b) {
+  const pa = String(a || '').split('.').map(n => parseInt(n) || 0);
+  const pb = String(b || '').split('.').map(n => parseInt(n) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i] ?? -1;
+    const vb = pb[i] ?? -1;
+    if (va !== vb) return va - vb;
+  }
+  return 0;
 }
 
 export default function Dashboard() {
@@ -61,6 +74,28 @@ export default function Dashboard() {
 
   const fileInputRef = useRef(null);
   const pasteRef = useRef(null);
+  const extratoFileInputRef = useRef(null);
+
+  async function handleExtratoFileUpload(file) {
+    try {
+      const ext = file.name.split('.').pop().toLowerCase();
+      let text;
+      if (ext === 'csv' || ext === 'txt') {
+        text = await file.text();
+      } else {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+        text = rows.filter(r => r.some(c => String(c).trim() !== '')).map(r => r.join('\t')).join('\n');
+      }
+      setExtratoText(text);
+      setConfirmado(false);
+      notify(`Arquivo "${file.name}" carregado — confira abaixo e clique em Processar.`, 'success');
+    } catch (err) {
+      notify('Erro ao ler o arquivo: ' + err.message);
+    }
+  }
 
   // ---------- AUTH ----------
   useEffect(() => {
@@ -104,9 +139,10 @@ export default function Dashboard() {
   }
 
   async function loadPlanoContas(empresaId) {
-    const { data, error } = await supabase.from('plano_contas').select('*').eq('empresa_id', empresaId).order('codigo');
+    const { data, error } = await supabase.from('plano_contas').select('*').eq('empresa_id', empresaId);
     if (error) { console.error(error); return; }
-    setPlanoContas(data || []);
+    const ordenado = (data || []).slice().sort((a, b) => compararClassificacao(a.classificacao, b.classificacao));
+    setPlanoContas(ordenado);
   }
 
   async function loadRegras(empresaId) {
@@ -255,7 +291,12 @@ export default function Dashboard() {
     const c = planoContas.find(c => String(c.codigo) === String(codigo));
     return c ? c.descricao : '';
   }
+  function isContaSintetica(codigo) {
+    const c = planoContas.find(c => String(c.codigo) === String(codigo));
+    return c?.tipo === 'S';
+  }
   const regrasInvalidas = regras.filter(r => r.codigo && !findContaDesc(r.codigo));
+  const regrasComSintetica = regras.filter(r => r.codigo && isContaSintetica(r.codigo));
 
   // ---------- PLANO DE CONTAS (edição manual, admin) ----------
   async function addContaManual() {
@@ -431,7 +472,7 @@ export default function Dashboard() {
       </div>
 
       <datalist id="contas-datalist">
-        {planoContas.map(c => <option key={c.id} value={`${c.codigo} — ${c.descricao}`} />)}
+        {planoContas.map(c => <option key={c.id} value={`${c.codigo} — ${c.descricao}${c.tipo === 'S' ? ' [SINTÉTICA]' : ''}`} />)}
       </datalist>
 
       <header className="top">
@@ -561,14 +602,19 @@ export default function Dashboard() {
             )}
           </div>
 
-          <p className="hint">Cole as linhas do extrato conforme o layout selecionado.</p>
+          <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco.</p>
+          <div className="row" style={{ marginTop: 0 }}>
+            <input type="file" ref={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt"
+              onChange={e => { if (e.target.files?.[0]) handleExtratoFileUpload(e.target.files[0]); }} />
+            <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>ou cole manualmente abaixo</span>
+          </div>
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); }}
-            placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tC\tCLIENTE XYZ LTDA'} />
+            placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} />
           <div className="row">
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
-            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); }}>Limpar</button>
+            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
           </div>
 
           {processedRows.length > 0 && (
@@ -639,6 +685,9 @@ export default function Dashboard() {
             {regrasInvalidas.length > 0 && (
               <div className="stat warn">⚠ {regrasInvalidas.length} regra(s) com código que não existe no plano de contas</div>
             )}
+            {regrasComSintetica.length > 0 && (
+              <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>⚠ {regrasComSintetica.length} regra(s) apontando pra conta Sintética</div>
+            )}
           </div>
           {isAdmin && (
             <div className="row">
@@ -658,8 +707,8 @@ export default function Dashboard() {
                     <td><input className="cell-edit" defaultValue={r.palavra_chave} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'palavra_chave', e.target.value)} /></td>
                     <td><input className="cell-edit" list="contas-datalist" defaultValue={r.codigo ? `${r.codigo} — ${findContaDesc(r.codigo)}` : ''} readOnly={!isAdmin}
                       onBlur={e => isAdmin && updateRegra(r, 'codigo', extractCodigoFromPicked(e.target.value))} /></td>
-                    <td className="mono" style={{ color: findContaDesc(r.codigo) ? 'var(--ink-soft)' : 'var(--amber)' }}>
-                      {findContaDesc(r.codigo) || (r.codigo ? 'código não encontrado' : '')}
+                    <td className="mono" style={{ color: !findContaDesc(r.codigo) ? 'var(--amber)' : (isContaSintetica(r.codigo) ? '#A33' : 'var(--ink-soft)') }}>
+                      {!r.codigo ? '' : !findContaDesc(r.codigo) ? 'código não encontrado' : isContaSintetica(r.codigo) ? `⚠ ${findContaDesc(r.codigo)} (SINTÉTICA — evite lançar aqui)` : findContaDesc(r.codigo)}
                     </td>
                     <td><input className="cell-edit" defaultValue={r.descricao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'descricao', e.target.value)} /></td>
                     <td>{isAdmin && <button className="del-btn" onClick={() => deleteRegra(r)}>✕</button>}</td>
@@ -682,13 +731,24 @@ export default function Dashboard() {
           </div>
           <div className="table-wrap" style={{ marginTop: 14 }}>
             <table>
-              <thead><tr><th style={{ width: '12%' }}>CÓDIGO</th><th style={{ width: '20%' }}>CLASSIFICAÇÃO</th><th>DESCRIÇÃO</th><th style={{ width: 34 }}></th></tr></thead>
+              <thead><tr><th style={{ width: '10%' }}>CÓDIGO</th><th style={{ width: '18%' }}>CLASSIFICAÇÃO</th><th>DESCRIÇÃO</th><th style={{ width: '10%' }}>TIPO</th><th style={{ width: 34 }}></th></tr></thead>
               <tbody>
                 {contasFiltradas.map(c => (
                   <tr key={c.id} title={c.updated_by ? `editado por ${c.updated_by} em ${fmtData(c.updated_at)}` : ''}>
                     <td><input className="cell-edit" defaultValue={c.codigo} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'codigo', e.target.value)} /></td>
                     <td><input className="cell-edit" defaultValue={c.classificacao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'classificacao', e.target.value)} /></td>
                     <td><input className="cell-edit" defaultValue={c.descricao} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'descricao', e.target.value)} /></td>
+                    <td>
+                      {isAdmin ? (
+                        <select defaultValue={c.tipo || ''} onChange={e => updateConta(c, 'tipo', e.target.value || null)} style={{ fontSize: 11.5 }}>
+                          <option value="">—</option>
+                          <option value="A">Analítica</option>
+                          <option value="S">Sintética</option>
+                        </select>
+                      ) : (
+                        c.tipo === 'S' ? <span className="badge warn">Sintética</span> : c.tipo === 'A' ? <span className="badge ok">Analítica</span> : '—'
+                      )}
+                    </td>
                     <td>{isAdmin && <button className="del-btn" onClick={() => deleteConta(c)}>✕</button>}</td>
                   </tr>
                 ))}
