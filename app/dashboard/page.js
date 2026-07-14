@@ -3,7 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile } from '@/lib/planoParser';
+import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta } from '@/lib/planoParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
 const TABS = ['empresas', 'extrato', 'regras', 'contas', 'importacao', 'historico'];
@@ -149,7 +149,7 @@ export default function Dashboard() {
   useEffect(() => { if (!checkingAuth) { loadEmpresas(); loadLayouts(); } }, [checkingAuth]);
 
   useEffect(() => {
-    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); }
+    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); loadBaseAprendizado(currentEmpresaId); }
   }, [currentEmpresaId]);
 
   useEffect(() => {
@@ -383,6 +383,18 @@ export default function Dashboard() {
 
   // ---------- EXTRATO ----------
   const existentesCacheRef = useRef(null); // Set de fingerprints já importados, cacheado por processamento
+  const baseAprendizadoRef = useRef([]); // lançamentos já classificados desta empresa, usados pra sugestão por similaridade
+
+  async function loadBaseAprendizado(empresaId) {
+    const { data, error } = await supabase.from('lancamentos_importados').select('historico,detalhamento,conta_devedora,conta_credora')
+      .eq('empresa_id', empresaId).eq('status', 'automatico').limit(3000);
+    if (error) { console.error(error); baseAprendizadoRef.current = []; return; }
+    baseAprendizadoRef.current = (data || []).map(d => ({
+      tokens: tokenizarTexto((d.historico || '') + ' ' + (d.detalhamento || '')),
+      contaDevedora: d.conta_devedora, contaCredora: d.conta_credora,
+      historico: d.detalhamento ? `${d.historico} - ${d.detalhamento}` : d.historico,
+    }));
+  }
 
   function withTimeout(promise, ms, label) {
     return Promise.race([
@@ -428,7 +440,12 @@ export default function Dashboard() {
       }
 
       const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
-      setProcessedRows(marcado);
+      const comSugestao = marcado.map(r => {
+        if (r.status !== 'sem match') return r;
+        const sugestao = sugerirConta(r, baseAprendizadoRef.current, contaBancaria);
+        return sugestao ? { ...r, sugestao } : r;
+      });
+      setProcessedRows(comSugestao);
     } catch (err) {
       console.error(err);
       notify('Deu um erro ao processar o extrato: ' + err.message + '\n\nConfira se as colunas do layout (Data/Histórico/Valor) estão configuradas corretamente.');
@@ -506,6 +523,7 @@ export default function Dashboard() {
     }
     setConfirmado(true);
     loadHistorico(currentEmpresaId);
+    loadBaseAprendizado(currentEmpresaId); // atualiza a base de aprendizado com os lançamentos recém-confirmados
     notify('Importação confirmada e salva no histórico!', 'success');
   }
 
@@ -740,7 +758,19 @@ export default function Dashboard() {
                       <td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
                       <td>
                         {r.status === 'automatico' && <span className="badge ok">✔ automatico</span>}
-                        {r.status === 'sem match' && <span className="badge warn">⚠ sem match</span>}
+                        {r.status === 'sem match' && !r.sugestao && <span className="badge warn">⚠ sem match</span>}
+                        {r.status === 'sem match' && r.sugestao && (
+                          <div>
+                            <span className="badge warn" style={{ marginBottom: 4, display: 'inline-block' }}>⚠ sem match</span><br />
+                            <span style={{ fontSize: 11, color: 'var(--teal-dark)' }}>
+                              💡 sugestão: {r.sugestao.codigo} — {findContaDesc(r.sugestao.codigo)} ({Math.round(r.sugestao.score * 100)}% parecido)
+                            </span><br />
+                            <button className="btn secondary" style={{ fontSize: 10.5, padding: '3px 8px', marginTop: 3 }}
+                              onClick={() => { setKeywordDraft(''); setCodigoDraft(`${r.sugestao.codigo} — ${findContaDesc(r.sugestao.codigo)}`); }}>
+                              Usar sugestão
+                            </button>
+                          </div>
+                        )}
                         {r.status === 'duplicado' && <span className="badge warn" style={{ background: '#F1E3E3', color: '#A33' }}>⚠ duplicado</span>}
                       </td>
                     </tr>
