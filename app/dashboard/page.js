@@ -26,6 +26,14 @@ function fmtData(iso) {
   return d.toLocaleString('pt-BR');
 }
 
+const GRUPOS_POR_NIVEL1 = {
+  '1': 'ATIVO', '2': 'PASSIVO', '3': 'CUSTOS E DESPESAS', '4': 'RECEITAS', '5': 'APURAÇÃO',
+};
+function grupoOf(classificacao) {
+  const nivel1 = String(classificacao || '').split('.')[0];
+  return GRUPOS_POR_NIVEL1[nivel1] || '—';
+}
+
 function compararClassificacao(a, b) {
   const pa = String(a || '').split('.').map(n => parseInt(n) || 0);
   const pb = String(b || '').split('.').map(n => parseInt(n) || 0);
@@ -55,6 +63,7 @@ export default function Dashboard() {
   const [contaBancaria, setContaBancaria] = useState(null);
 
   const [contasSearch, setContasSearch] = useState('');
+  const [grupoFiltro, setGrupoFiltro] = useState('');
   const [extratoText, setExtratoText] = useState('');
   const [processedRows, setProcessedRows] = useState([]);
   const [confirmado, setConfirmado] = useState(false);
@@ -71,6 +80,18 @@ export default function Dashboard() {
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
   }
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === 'F4') {
+        e.preventDefault();
+        // F4 sem estar em nenhum campo específico = apenas navegar/consultar
+        openPicker(() => {});
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   function notify(message, type = 'error') {
     const id = Date.now() + Math.random();
@@ -504,7 +525,9 @@ export default function Dashboard() {
   const empresaAtiva = empresas.find(e => e.id === currentEmpresaId);
   const contasFiltradas = planoContas.filter(c => {
     const f = contasSearch.toLowerCase();
-    return !f || String(c.codigo).includes(f) || (c.descricao || '').toLowerCase().includes(f);
+    const passaBusca = !f || String(c.codigo).includes(f) || (c.descricao || '').toLowerCase().includes(f);
+    const passaGrupo = !grupoFiltro || grupoOf(c.classificacao) === grupoFiltro;
+    return passaBusca && passaGrupo;
   }).slice(0, 500);
 
   return (
@@ -783,17 +806,22 @@ export default function Dashboard() {
           <div className="row" style={{ marginTop: 0 }}>
             <input type="search" placeholder="Buscar por código ou descrição…" style={{ minWidth: 280 }}
               value={contasSearch} onChange={e => setContasSearch(e.target.value)} />
-            <button className="btn secondary" onClick={() => openPicker(() => {})}>🔍 Abrir em janela de busca</button>
+            <select value={grupoFiltro} onChange={e => setGrupoFiltro(e.target.value)}>
+              <option value="">Todos os grupos</option>
+              {Object.values(GRUPOS_POR_NIVEL1).map(g => <option key={g} value={g}>{g}</option>)}
+            </select>
+            <button className="btn secondary" onClick={() => openPicker(() => {})}>🔍 Abrir em janela de busca (F4)</button>
             {isAdmin && <button className="btn" onClick={addContaManual}>+ Nova conta manual</button>}
           </div>
           <div className="table-wrap" style={{ marginTop: 14 }}>
             <table>
-              <thead><tr><th style={{ width: '10%' }}>CÓDIGO</th><th style={{ width: '18%' }}>CLASSIFICAÇÃO</th><th>DESCRIÇÃO</th><th style={{ width: '10%' }}>TIPO</th><th style={{ width: 34 }}></th></tr></thead>
+              <thead><tr><th style={{ width: '9%' }}>CÓDIGO</th><th style={{ width: '15%' }}>CLASSIFICAÇÃO</th><th style={{ width: '13%' }}>GRUPO</th><th>DESCRIÇÃO</th><th style={{ width: '10%' }}>TIPO</th><th style={{ width: 34 }}></th></tr></thead>
               <tbody>
                 {contasFiltradas.map(c => (
                   <tr key={c.id} title={c.updated_by ? `editado por ${c.updated_by} em ${fmtData(c.updated_at)}` : ''}>
                     <td><input className="cell-edit" defaultValue={c.codigo} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'codigo', e.target.value)} /></td>
                     <td><input className="cell-edit" defaultValue={c.classificacao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'classificacao', e.target.value)} /></td>
+                    <td className="mono" style={{ fontSize: 11, color: 'var(--ink-soft)' }}>{grupoOf(c.classificacao)}</td>
                     <td><input className="cell-edit" defaultValue={c.descricao} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'descricao', e.target.value)} /></td>
                     <td>
                       {isAdmin ? (
