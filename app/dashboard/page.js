@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile } from '@/lib/planoParser';
+import ContaPickerModal from '@/components/ContaPickerModal';
 
 const TABS = ['empresas', 'extrato', 'regras', 'contas', 'importacao', 'historico'];
 const TAB_LABELS = {
@@ -65,6 +66,11 @@ export default function Dashboard() {
   const [keywordDraft, setKeywordDraft] = useState('');
   const [codigoDraft, setCodigoDraft] = useState('');
   const [toasts, setToasts] = useState([]);
+  const [pickerOnSelect, setPickerOnSelect] = useState(null);
+
+  function openPicker(onSelectFn) {
+    setPickerOnSelect(() => onSelectFn);
+  }
 
   function notify(message, type = 'error') {
     const id = Date.now() + Math.random();
@@ -91,6 +97,7 @@ export default function Dashboard() {
       }
       setExtratoText(text);
       setConfirmado(false);
+      existentesCacheRef.current = null;
       notify(`Arquivo "${file.name}" carregado — confira abaixo e clique em Processar.`, 'success');
     } catch (err) {
       notify('Erro ao ler o arquivo: ' + err.message);
@@ -168,6 +175,10 @@ export default function Dashboard() {
   }
 
   async function salvarContaBancaria(codigo) {
+    if (codigo && isContaSintetica(codigo)) {
+      notify('Essa conta é Sintética (de totalização) — a conta bancária precisa ser uma conta Analítica.');
+      return;
+    }
     setContaBancaria(codigo || null);
     if (!codigo || !currentEmpresaId || !currentLayoutId) return;
     const { error } = await supabase.from('empresa_layout_conta')
@@ -262,6 +273,14 @@ export default function Dashboard() {
     loadRegras(currentEmpresaId);
   }
   async function updateRegra(regra, field, value) {
+    if (field === 'codigo') {
+      const codigoNum = parseInt(value) || 0;
+      if (codigoNum && isContaSintetica(codigoNum)) {
+        notify('Essa conta é Sintética (de totalização) — escolha uma conta Analítica.');
+        loadRegras(currentEmpresaId); // recarrega pra desfazer o valor digitado na tela
+        return;
+      }
+    }
     const patch = { [field]: field === 'codigo' ? (parseInt(value) || 0) : value, updated_by: userEmail, updated_at: new Date().toISOString() };
     const { error } = await supabase.from('regras').update(patch).eq('id', regra.id);
     if (error) { notify('Erro: ' + error.message); return; }
@@ -342,7 +361,16 @@ export default function Dashboard() {
   }
 
   // ---------- EXTRATO ----------
-  async function processarExtrato(regrasOverride) {
+  const existentesCacheRef = useRef(null); // Set de fingerprints já importados, cacheado por processamento
+
+  function withTimeout(promise, ms, label) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`Tempo esgotado (${label})`)), ms)),
+    ]);
+  }
+
+  async function processarExtrato(regrasOverride, opts = {}) {
     if (!contaBancaria) { notify('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.'); return; }
     if (!currentLayout) { notify('Selecione um layout de banco na aba EXTRATO.'); return; }
     setProcessando(true);
@@ -351,18 +379,33 @@ export default function Dashboard() {
       const regrasAtuais = regrasOverride || regras;
       const rows = parseExtrato(extratoText, currentLayout);
       const classificado = classificar(rows, regrasAtuais, contaBancaria);
-
       const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
-      const fps = withFingerprint.map(r => r.fingerprint);
-      let existentes = new Set();
-      const chunkSize = 200;
-      for (let i = 0; i < fps.length; i += chunkSize) {
-        const chunk = fps.slice(i, i + chunkSize);
-        const { data, error } = await supabase.from('lancamentos_importados').select('fingerprint')
-          .eq('empresa_id', currentEmpresaId).in('fingerprint', chunk);
-        if (error) { console.error(error); continue; }
-        (data || []).forEach(d => existentes.add(d.fingerprint));
+
+      let existentes;
+      if (opts.reuseCache && existentesCacheRef.current) {
+        // reclassificação local (ex: depois de criar uma regra) — não precisa consultar o banco de novo
+        existentes = existentesCacheRef.current;
+      } else {
+        existentes = new Set();
+        const fps = withFingerprint.map(r => r.fingerprint);
+        const chunkSize = 80;
+        for (let i = 0; i < fps.length; i += chunkSize) {
+          const chunk = fps.slice(i, i + chunkSize);
+          try {
+            const { data, error } = await withTimeout(
+              supabase.from('lancamentos_importados').select('fingerprint').eq('empresa_id', currentEmpresaId).in('fingerprint', chunk),
+              15000, 'verificação de duplicidade'
+            );
+            if (error) { console.error(error); continue; }
+            (data || []).forEach(d => existentes.add(d.fingerprint));
+          } catch (timeoutErr) {
+            console.error(timeoutErr);
+            notify('A verificação de duplicidade demorou demais e foi pulada — confira antes de confirmar a importação.', 'error');
+          }
+        }
+        existentesCacheRef.current = existentes;
       }
+
       const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
       setProcessedRows(marcado);
     } catch (err) {
@@ -399,6 +442,7 @@ export default function Dashboard() {
     const codigo = extractCodigoFromPicked(codigoDraft);
     if (!keywordDraft.trim()) { notify('Monte a palavra-chave clicando nas palavras do histórico/detalhamento, ou digite manualmente.'); return; }
     if (!codigo) { notify('Escolha a conta contábil da regra.'); return; }
+    if (isContaSintetica(codigo)) { notify('Essa conta é Sintética (de totalização) — escolha uma conta Analítica, que é onde os lançamentos podem entrar.'); return; }
     const maxOrdem = regras.reduce((m, r) => Math.max(m, r.ordem || 0), 0);
     const { error } = await supabase.from('regras').insert({
       empresa_id: currentEmpresaId, palavra_chave: keywordDraft.trim(), codigo, descricao: '',
@@ -409,7 +453,7 @@ export default function Dashboard() {
     const { data: novasRegras } = await supabase.from('regras').select('*').eq('empresa_id', currentEmpresaId).order('ordem');
     setRegras(novasRegras || []);
     notify('Regra criada! Reclassificando o extrato…', 'success');
-    if (processedRows.length > 0) await processarExtrato(novasRegras || []);
+    if (processedRows.length > 0) await processarExtrato(novasRegras || [], { reuseCache: true });
   }
 
   async function confirmarImportacao() {
@@ -465,6 +509,13 @@ export default function Dashboard() {
 
   return (
     <div className="app">
+      {pickerOnSelect && (
+        <ContaPickerModal
+          contas={planoContas}
+          onSelect={(conta) => pickerOnSelect(conta)}
+          onClose={() => setPickerOnSelect(null)}
+        />
+      )}
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={'toast toast-' + t.type}>{t.message}</div>
@@ -482,7 +533,7 @@ export default function Dashboard() {
         </div>
         <div className="empresa-picker">
           <label>EMPRESA ATIVA</label>
-          <select value={currentEmpresaId || ''} onChange={e => setCurrentEmpresaId(e.target.value)}>
+          <select value={currentEmpresaId || ''} onChange={e => { setCurrentEmpresaId(e.target.value); existentesCacheRef.current = null; setProcessedRows([]); }}>
             {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
           </select>
         </div>
@@ -527,7 +578,7 @@ export default function Dashboard() {
           {isAdmin && (
             <div className="card" style={{ marginTop: 20 }}>
               <h3>Importar / substituir plano de contas de uma empresa</h3>
-              <p className="hint" style={{ marginBottom: 10 }}>Envie o .xls/.xlsx/.csv exportado do Domínio, ou cole manualmente <code>codigo;classificacao;descricao</code> por linha.</p>
+              <p className="hint" style={{ marginBottom: 10 }}>Envie o .xls/.xlsx/.csv exportado do Domínio (detecta Sintética/Analítica automaticamente se o arquivo tiver essa coluna), ou cole manualmente no formato <code>codigo;classificacao;descricao;tipo</code> — tipo é <code>A</code> (Analítica) ou <code>S</code> (Sintética), pode deixar em branco se não souber.</p>
               <div className="row" style={{ marginTop: 0 }}>
                 <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Empresa de destino:</label>
                 <select value={destEmpresaImport || ''} onChange={e => setDestEmpresaImport(e.target.value)}>
@@ -535,7 +586,7 @@ export default function Dashboard() {
                 </select>
               </div>
               <div className="row"><input type="file" ref={fileInputRef} accept=".xls,.xlsx,.csv,.txt" /></div>
-              <textarea ref={pasteRef} placeholder={'8;1.1.1.02.001;BANCO DO BRASIL'} style={{ minHeight: 80, marginTop: 8 }} />
+              <textarea ref={pasteRef} placeholder={'7;1.1.1.02;BANCOS CONTA MOVIMENTO;S\n8;1.1.1.02.001;BANCO DO BRASIL;A'} style={{ minHeight: 80, marginTop: 8 }} />
               <div className="row">
                 <button className="btn" onClick={importarPlano}>Importar (substitui o plano de contas atual)</button>
                 <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>{importStatus}</span>
@@ -567,6 +618,7 @@ export default function Dashboard() {
                   defaultValue={contaBancaria ? `${contaBancaria} — ${findContaDesc(contaBancaria)}` : ''}
                   key={`${currentEmpresaId}-${currentLayoutId}`}
                   onBlur={e => salvarContaBancaria(extractCodigoFromPicked(e.target.value))} />
+                <button className="btn secondary" onClick={() => openPicker((conta) => salvarContaBancaria(conta.codigo))}>🔍 Buscar conta</button>
                 <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
               </div>
             )}
@@ -608,13 +660,13 @@ export default function Dashboard() {
               onChange={e => { if (e.target.files?.[0]) handleExtratoFileUpload(e.target.files[0]); }} />
             <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>ou cole manualmente abaixo</span>
           </div>
-          <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); }}
+          <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); existentesCacheRef.current = null; }}
             placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} />
           <div className="row">
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
-            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
+            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); existentesCacheRef.current = null; if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
           </div>
 
           {processedRows.length > 0 && (
@@ -630,6 +682,7 @@ export default function Dashboard() {
                 <div className="row">
                   <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Conta contábil:</label>
                   <input type="text" list="contas-datalist" style={{ minWidth: 280 }} value={codigoDraft} onChange={e => setCodigoDraft(e.target.value)} placeholder="buscar conta…" />
+                  <button className="btn secondary" onClick={() => openPicker((conta) => setCodigoDraft(`${conta.codigo} — ${conta.descricao}`))}>🔍 Buscar conta</button>
                   <button className="btn teal" onClick={salvarRegraDraft} disabled={!keywordDraft.trim() || !codigoDraft.trim()}>Salvar regra e reclassificar</button>
                   <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
                 </div>
@@ -705,8 +758,11 @@ export default function Dashboard() {
                       <button className="del-btn" style={{ color: 'var(--ink-soft)' }} disabled={!isAdmin || i === regras.length - 1} onClick={() => moveRegra(r, 1)}>↓</button>
                     </td>
                     <td><input className="cell-edit" defaultValue={r.palavra_chave} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'palavra_chave', e.target.value)} /></td>
-                    <td><input className="cell-edit" list="contas-datalist" defaultValue={r.codigo ? `${r.codigo} — ${findContaDesc(r.codigo)}` : ''} readOnly={!isAdmin}
-                      onBlur={e => isAdmin && updateRegra(r, 'codigo', extractCodigoFromPicked(e.target.value))} /></td>
+                    <td style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <input className="cell-edit" list="contas-datalist" defaultValue={r.codigo ? `${r.codigo} — ${findContaDesc(r.codigo)}` : ''} readOnly={!isAdmin}
+                        onBlur={e => isAdmin && updateRegra(r, 'codigo', extractCodigoFromPicked(e.target.value))} />
+                      {isAdmin && <button className="del-btn" title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo', String(conta.codigo)))}>🔍</button>}
+                    </td>
                     <td className="mono" style={{ color: !findContaDesc(r.codigo) ? 'var(--amber)' : (isContaSintetica(r.codigo) ? '#A33' : 'var(--ink-soft)') }}>
                       {!r.codigo ? '' : !findContaDesc(r.codigo) ? 'código não encontrado' : isContaSintetica(r.codigo) ? `⚠ ${findContaDesc(r.codigo)} (SINTÉTICA — evite lançar aqui)` : findContaDesc(r.codigo)}
                     </td>
@@ -727,6 +783,7 @@ export default function Dashboard() {
           <div className="row" style={{ marginTop: 0 }}>
             <input type="search" placeholder="Buscar por código ou descrição…" style={{ minWidth: 280 }}
               value={contasSearch} onChange={e => setContasSearch(e.target.value)} />
+            <button className="btn secondary" onClick={() => openPicker(() => {})}>🔍 Abrir em janela de busca</button>
             {isAdmin && <button className="btn" onClick={addContaManual}>+ Nova conta manual</button>}
           </div>
           <div className="table-wrap" style={{ marginTop: 14 }}>
