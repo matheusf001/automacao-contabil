@@ -3,7 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta } from '@/lib/planoParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
@@ -78,6 +78,9 @@ export default function Dashboard() {
   const [codigoDraft, setCodigoDraft] = useState('');
   const [toasts, setToasts] = useState([]);
   const [pickerOnSelect, setPickerOnSelect] = useState(null);
+  const [recentes, setRecentes] = useState([]);
+  const [verTodas, setVerTodas] = useState(false);
+  const [iaLoading, setIaLoading] = useState(false);
 
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
@@ -94,6 +97,27 @@ export default function Dashboard() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  // ---------- EMPRESAS RECENTES (guardado no navegador) ----------
+  useEffect(() => {
+    try { setRecentes(JSON.parse(localStorage.getItem('ac_empresas_recentes') || '[]')); } catch { /* ignora */ }
+  }, []);
+
+  function registrarRecente(id) {
+    setRecentes(prev => {
+      const novo = [id, ...prev.filter(x => x !== id)].slice(0, 6);
+      try { localStorage.setItem('ac_empresas_recentes', JSON.stringify(novo)); } catch { /* ignora */ }
+      return novo;
+    });
+  }
+
+  function selecionarEmpresa(id) {
+    setCurrentEmpresaId(id);
+    existentesCacheRef.current = null;
+    setProcessedRows([]);
+    setConfirmado(false);
+    registrarRecente(id);
+  }
 
   function notify(message, type = 'error') {
     const id = Date.now() + Math.random();
@@ -226,7 +250,7 @@ export default function Dashboard() {
     const { data, error } = await supabase.from('empresas').insert({ nome: nome.trim() }).select().single();
     if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
     await loadEmpresas();
-    setCurrentEmpresaId(data.id);
+    selecionarEmpresa(data.id);
     notify(`Empresa "${nome.trim()}" criada!`, 'success');
   }
   async function renomearEmpresa(emp) {
@@ -529,6 +553,88 @@ export default function Dashboard() {
     notify('Importação confirmada e salva no histórico!', 'success');
   }
 
+  // ---------- CLASSIFICAÇÃO COM IA (Claude via API — sempre com confirmação humana) ----------
+  async function classificarComIA() {
+    const semMatch = processedRows
+      .map((r, i) => ({ ...r, __idx: i }))
+      .filter(r => r.status === 'sem match' && !r.sugestaoIA);
+    if (semMatch.length === 0) { notify('Nenhum lançamento sem correspondência para enviar à IA.'); return; }
+
+    setIaLoading(true);
+    try {
+      // Só manda dados DA EMPRESA ATIVA: plano (só Analíticas), regras e exemplos já confirmados dela.
+      const contasAnaliticas = planoContas
+        .filter(c => c.tipo !== 'S' && c.codigo && c.descricao)
+        .map(c => ({ codigo: c.codigo, descricao: c.descricao }));
+      const exemplos = baseAprendizadoRef.current.slice(-50).map(e => ({
+        texto: e.historico,
+        codigo: String(e.contaDevedora) === String(contaBancaria) ? e.contaCredora : e.contaDevedora,
+      })).filter(e => e.codigo);
+      const regrasResumo = regras.filter(r => r.palavra_chave && r.codigo)
+        .map(r => ({ palavra_chave: r.palavra_chave, codigo: r.codigo }));
+
+      const resp = await withTimeout(fetch('/api/classificar-ia', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          lancamentos: semMatch.slice(0, 60).map(r => ({
+            id: r.__idx, data: r.data, valor: r.valor, cd: r.cd,
+            historico: r.historico, detalhamento: r.detalhamento,
+          })),
+          contas: contasAnaliticas, regras: regrasResumo, exemplos,
+        }),
+      }), 90000, 'classificação com IA');
+
+      const data = await resp.json();
+      if (!resp.ok || data.error) { notify(data.error || 'Erro ao chamar a IA.'); return; }
+
+      const porId = new Map((data.sugestoes || []).map(s => [Number(s.id), s]));
+      let aplicadas = 0;
+      const novas = processedRows.map((r, i) => {
+        const s = porId.get(i);
+        if (!s || r.status !== 'sem match') return r;
+        if (!findContaDesc(s.codigo) || isContaSintetica(s.codigo)) return r; // segurança extra
+        aplicadas++;
+        return { ...r, sugestaoIA: s };
+      });
+      setProcessedRows(novas);
+      if (aplicadas > 0) notify(`A IA sugeriu conta para ${aplicadas} lançamento(s). Revise e clique em "Aceitar" nos que estiverem certos.`, 'success');
+      else notify('A IA não teve confiança suficiente para sugerir nenhuma conta desta vez.', 'info');
+      if (semMatch.length > 60) notify('Enviados os primeiros 60 sem match — clique de novo para classificar os demais.', 'info');
+    } catch (err) {
+      console.error(err);
+      notify('Erro ao classificar com IA: ' + err.message);
+    } finally {
+      setIaLoading(false);
+    }
+  }
+
+  function aplicarContaNaLinha(r, codigo) {
+    const isDebito = r.cd === 'D';
+    return {
+      ...r,
+      contaDevedora: isDebito ? codigo : contaBancaria,
+      contaCredora: isDebito ? contaBancaria : codigo,
+      status: 'automatico',
+      origem: 'ia',
+    };
+  }
+
+  function aceitarSugestaoIA(idx) {
+    setProcessedRows(prev => prev.map((r, i) =>
+      (i === idx && r.status === 'sem match' && r.sugestaoIA) ? aplicarContaNaLinha(r, r.sugestaoIA.codigo) : r
+    ));
+  }
+
+  function aceitarTodasIA() {
+    const total = processedRows.filter(r => r.status === 'sem match' && r.sugestaoIA).length;
+    if (total === 0) return;
+    if (!confirm(`Aceitar as ${total} sugestões da IA? Você ainda pode revisar tudo antes de confirmar a importação.`)) return;
+    setProcessedRows(prev => prev.map(r =>
+      (r.status === 'sem match' && r.sugestaoIA) ? aplicarContaNaLinha(r, r.sugestaoIA.codigo) : r
+    ));
+  }
+
   function exportarImportacao(onlyMatched) {
     let csv = 'DATA;CONTA DEVEDORA;CONTA CREDORA;VALOR;HISTORICO;STATUS\n';
     processedRows.forEach(r => {
@@ -576,7 +682,7 @@ export default function Dashboard() {
         </div>
         <div className="empresa-picker">
           <label>EMPRESA ATIVA</label>
-          <select value={currentEmpresaId || ''} onChange={e => { setCurrentEmpresaId(e.target.value); existentesCacheRef.current = null; setProcessedRows([]); }}>
+          <select value={currentEmpresaId || ''} onChange={e => selecionarEmpresa(e.target.value)}>
             {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
           </select>
         </div>
@@ -595,38 +701,73 @@ export default function Dashboard() {
         <section className="panel">
           <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
             <div>
-              <h2>Empresas cadastradas</h2>
-              <p className="hint" style={{ marginBottom: 0 }}>Cada empresa tem seu próprio plano de contas e regras.
+              <h2>Empresas</h2>
+              <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} cadastradas — cada uma com seu próprio plano de contas e regras.
                 {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <div style={{ position: 'relative' }}>
-                <Search size={15} style={{ position: 'absolute', left: 11, top: 11, color: 'var(--ink-soft)' }} />
-                <input type="search" placeholder="Buscar empresa…" style={{ paddingLeft: 34, minWidth: 220 }}
-                  value={empresaListSearch} onChange={e => setEmpresaListSearch(e.target.value)} />
-              </div>
-              {isAdmin && <button className="btn teal" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
-            </div>
+            {isAdmin && <button className="btn teal" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
           </div>
-          <div style={{ marginTop: 18 }}>
-            {empresas.filter(emp => !empresaListSearch.trim() || emp.nome.toLowerCase().includes(empresaListSearch.toLowerCase())).map(emp => (
-              <div key={emp.id} className={'empresa-row' + (emp.id === currentEmpresaId ? ' active' : '')}>
-                <div>
-                  <div className="name">{emp.nome}</div>
-                  <div className="meta">conta banco fixa (padrão): {emp.conta_banco_fixa ?? '—'}</div>
-                </div>
-                <div className="icon-btn-group">
-                  <button className="icon-btn icon-btn-teal" title="Usar esta empresa" onClick={() => setCurrentEmpresaId(emp.id)}><Check size={16} /></button>
-                  {isAdmin && <button className="icon-btn" title="Renomear" onClick={() => renomearEmpresa(emp)}><Pencil size={15} /></button>}
-                  {isAdmin && <button className="icon-btn icon-btn-danger" title="Excluir" onClick={() => excluirEmpresa(emp)}><Trash2 size={15} /></button>}
-                </div>
-              </div>
-            ))}
-            {empresas.filter(emp => !empresaListSearch.trim() || emp.nome.toLowerCase().includes(empresaListSearch.toLowerCase())).length === 0 && (
-              <div className="empty-state">Nenhuma empresa encontrada para "{empresaListSearch}".</div>
-            )}
+
+          <div className="search-hero">
+            <Search size={18} />
+            <input type="search" placeholder="Buscar empresa pelo nome…" autoFocus
+              value={empresaListSearch} onChange={e => setEmpresaListSearch(e.target.value)} />
           </div>
+
+          {(() => {
+            const busca = empresaListSearch.trim().toLowerCase();
+            const filtradas = busca ? empresas.filter(emp => emp.nome.toLowerCase().includes(busca)) : [];
+            const recentesList = recentes.map(id => empresas.find(e => e.id === id)).filter(Boolean);
+
+            const renderCard = (emp) => (
+              <div key={emp.id} className={'empresa-card' + (emp.id === currentEmpresaId ? ' active' : '')}
+                onClick={() => { selecionarEmpresa(emp.id); setEmpresaListSearch(''); }}
+                title="Clique para usar esta empresa">
+                <div className="card-top">
+                  <Building2 size={16} className="card-ico" />
+                  {emp.id === currentEmpresaId && <span className="badge ok">ativa</span>}
+                </div>
+                <div className="name">{emp.nome}</div>
+                <div className="meta">conta banco fixa (padrão): {emp.conta_banco_fixa ?? '—'}</div>
+                {isAdmin && (
+                  <div className="card-actions">
+                    <button className="icon-btn" title="Renomear" onClick={(ev) => { ev.stopPropagation(); renomearEmpresa(emp); }}><Pencil size={14} /></button>
+                    <button className="icon-btn icon-btn-danger" title="Excluir" onClick={(ev) => { ev.stopPropagation(); excluirEmpresa(emp); }}><Trash2 size={14} /></button>
+                  </div>
+                )}
+              </div>
+            );
+
+            if (busca) {
+              return (
+                <>
+                  <div className="section-label">{filtradas.length} resultado(s) para "{empresaListSearch}"</div>
+                  {filtradas.length > 0
+                    ? <div className="empresa-grid">{filtradas.map(renderCard)}</div>
+                    : <div className="empty-state">Nenhuma empresa encontrada. {isAdmin && 'Use o botão "Nova empresa" para cadastrar.'}</div>}
+                </>
+              );
+            }
+            return (
+              <>
+                {recentesList.length > 0 && (
+                  <>
+                    <div className="section-label"><Clock size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Usadas recentemente</div>
+                    <div className="empresa-grid">{recentesList.map(renderCard)}</div>
+                  </>
+                )}
+                {recentesList.length === 0 && (
+                  <div className="empty-state" style={{ padding: '30px 20px' }}>Use a busca acima para encontrar uma empresa. As que você usar vão aparecer aqui como atalho.</div>
+                )}
+                <button className="btn secondary" style={{ marginTop: 18 }} onClick={() => setVerTodas(v => !v)}>
+                  {verTodas ? <ChevronUp size={14} style={{ marginRight: 5, verticalAlign: -2 }} /> : <ChevronDown size={14} style={{ marginRight: 5, verticalAlign: -2 }} />}
+                  {verTodas ? 'Esconder lista completa' : `Ver todas as ${empresas.length} empresas`}
+                </button>
+                {verTodas && <div className="empresa-grid" style={{ marginTop: 14 }}>{empresas.map(renderCard)}</div>}
+              </>
+            );
+          })()}
 
           {isAdmin && (
             <div className="card" style={{ marginTop: 20 }}>
@@ -758,6 +899,11 @@ export default function Dashboard() {
                 <div className="stat">{processedRows.length} lançamentos</div>
                 <div className="stat ok">{processedRows.filter(r => r.status === 'automatico').length} classificados</div>
                 <div className="stat warn">{processedRows.filter(r => r.status === 'sem match').length} sem correspondência</div>
+                {processedRows.some(r => r.origem === 'ia') && (
+                  <div className="stat" style={{ background: '#EDE9FE', color: '#6D28D9', borderColor: '#DDD6FE' }}>
+                    ✦ {processedRows.filter(r => r.origem === 'ia').length} classificados pela IA (aceitos por você)
+                  </div>
+                )}
                 {processedRows.some(r => r.status === 'duplicado') && (
                   <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>
                     {processedRows.filter(r => r.status === 'duplicado').length} já importados antes (duplicado)
@@ -765,6 +911,18 @@ export default function Dashboard() {
                 )}
               </div>
               <div className="row" style={{ marginTop: 6 }}>
+                {processedRows.some(r => r.status === 'sem match' && !r.sugestaoIA) && (
+                  <button className="btn" onClick={classificarComIA} disabled={iaLoading}>
+                    {iaLoading ? (<><span className="spinner" /> Consultando a IA…</>) : (
+                      <><Sparkles size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Classificar com IA ({processedRows.filter(r => r.status === 'sem match' && !r.sugestaoIA).length} sem match)</>
+                    )}
+                  </button>
+                )}
+                {processedRows.some(r => r.status === 'sem match' && r.sugestaoIA) && (
+                  <button className="btn secondary" onClick={aceitarTodasIA}>
+                    ✦ Aceitar todas as sugestões da IA ({processedRows.filter(r => r.status === 'sem match' && r.sugestaoIA).length})
+                  </button>
+                )}
                 {!confirmado ? (
                   <button className="btn teal" onClick={confirmarImportacao}>Confirmar importação (salva no histórico)</button>
                 ) : (
@@ -782,9 +940,29 @@ export default function Dashboard() {
                       <td className="mono">{r.cd}</td>
                       <td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
                       <td>
-                        {r.status === 'automatico' && <span className="badge ok">✔ automatico</span>}
-                        {r.status === 'sem match' && !r.sugestao && <span className="badge warn">⚠ sem match</span>}
-                        {r.status === 'sem match' && r.sugestao && (
+                        {r.status === 'automatico' && (
+                          r.origem === 'ia'
+                            ? <span className="badge ia" title={r.sugestaoIA?.motivo || ''}>✦ IA (aceita por você)</span>
+                            : <span className="badge ok">✔ automatico</span>
+                        )}
+                        {r.status === 'sem match' && r.sugestaoIA && (
+                          <div>
+                            <span className="badge ia" title={r.sugestaoIA.motivo} style={{ marginBottom: 4, display: 'inline-block' }}>
+                              ✦ IA sugere: {r.sugestaoIA.codigo} — {findContaDesc(r.sugestaoIA.codigo)} ({r.sugestaoIA.confianca}% confiança)
+                            </span><br />
+                            {r.sugestaoIA.motivo && <span style={{ fontSize: 11, color: 'var(--ink-soft)' }}>{r.sugestaoIA.motivo}</span>}
+                            <div style={{ marginTop: 4, display: 'flex', gap: 5 }}>
+                              <button className="btn teal" style={{ fontSize: 10.5, padding: '3px 10px' }}
+                                onClick={() => aceitarSugestaoIA(i)}>Aceitar</button>
+                              <button className="btn secondary" style={{ fontSize: 10.5, padding: '3px 8px' }}
+                                onClick={() => { setKeywordDraft(''); setCodigoDraft(`${r.sugestaoIA.codigo} — ${findContaDesc(r.sugestaoIA.codigo)}`); }}>
+                                Criar regra com esta conta
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {r.status === 'sem match' && !r.sugestaoIA && !r.sugestao && <span className="badge warn">⚠ sem match</span>}
+                        {r.status === 'sem match' && !r.sugestaoIA && r.sugestao && (
                           <div>
                             <span className="badge warn" style={{ marginBottom: 4, display: 'inline-block' }}>⚠ sem match</span><br />
                             <span style={{ fontSize: 11, color: 'var(--teal-dark)' }}>
@@ -971,7 +1149,7 @@ export default function Dashboard() {
 
       </div>
 
-      <div className="footer-note">Dados salvos no Supabase — acessíveis de qualquer lugar por qualquer login autorizado.</div>
+      <div className="footer-note">Dados salvos no Supabase — acessíveis de qualquer lugar por qualquer login autorizado. Sugestões da IA nunca são aplicadas sem a sua confirmação.</div>
     </div>
   );
 }
