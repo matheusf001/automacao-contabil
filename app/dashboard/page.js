@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta } from '@/lib/planoParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
@@ -64,6 +65,7 @@ export default function Dashboard() {
 
   const [contasSearch, setContasSearch] = useState('');
   const [grupoFiltro, setGrupoFiltro] = useState('');
+  const [empresaListSearch, setEmpresaListSearch] = useState('');
   const [extratoText, setExtratoText] = useState('');
   const [processedRows, setProcessedRows] = useState([]);
   const [confirmado, setConfirmado] = useState(false);
@@ -591,29 +593,39 @@ export default function Dashboard() {
 
       {tab === 'empresas' && (
         <section className="panel">
-          <h2>Empresas cadastradas</h2>
-          <p className="hint">Cada empresa tem seu próprio plano de contas e regras. Dados no banco — visíveis para todos que fizerem login.
-            {!isAdmin && <> Você está como <strong>operador</strong>: pode processar extratos, mas criar/editar empresas, plano de contas e regras é só para admin.</>}
-          </p>
-          {isAdmin && (
-            <div className="row" style={{ marginTop: 0 }}>
-              <button className="btn teal" onClick={criarEmpresa}>+ Nova empresa</button>
+          <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
+            <div>
+              <h2>Empresas cadastradas</h2>
+              <p className="hint" style={{ marginBottom: 0 }}>Cada empresa tem seu próprio plano de contas e regras.
+                {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
+              </p>
             </div>
-          )}
-          <div style={{ marginTop: 16 }}>
-            {empresas.map(emp => (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <div style={{ position: 'relative' }}>
+                <Search size={15} style={{ position: 'absolute', left: 11, top: 11, color: 'var(--ink-soft)' }} />
+                <input type="search" placeholder="Buscar empresa…" style={{ paddingLeft: 34, minWidth: 220 }}
+                  value={empresaListSearch} onChange={e => setEmpresaListSearch(e.target.value)} />
+              </div>
+              {isAdmin && <button className="btn teal" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
+            </div>
+          </div>
+          <div style={{ marginTop: 18 }}>
+            {empresas.filter(emp => !empresaListSearch.trim() || emp.nome.toLowerCase().includes(empresaListSearch.toLowerCase())).map(emp => (
               <div key={emp.id} className={'empresa-row' + (emp.id === currentEmpresaId ? ' active' : '')}>
                 <div>
                   <div className="name">{emp.nome}</div>
                   <div className="meta">conta banco fixa (padrão): {emp.conta_banco_fixa ?? '—'}</div>
                 </div>
-                <div className="row" style={{ margin: 0 }}>
-                  <button className="btn secondary" onClick={() => setCurrentEmpresaId(emp.id)}>Usar</button>
-                  {isAdmin && <button className="btn secondary" onClick={() => renomearEmpresa(emp)}>Renomear</button>}
-                  {isAdmin && <button className="btn danger" onClick={() => excluirEmpresa(emp)}>Excluir</button>}
+                <div className="icon-btn-group">
+                  <button className="icon-btn icon-btn-teal" title="Usar esta empresa" onClick={() => setCurrentEmpresaId(emp.id)}><Check size={16} /></button>
+                  {isAdmin && <button className="icon-btn" title="Renomear" onClick={() => renomearEmpresa(emp)}><Pencil size={15} /></button>}
+                  {isAdmin && <button className="icon-btn icon-btn-danger" title="Excluir" onClick={() => excluirEmpresa(emp)}><Trash2 size={15} /></button>}
                 </div>
               </div>
             ))}
+            {empresas.filter(emp => !empresaListSearch.trim() || emp.nome.toLowerCase().includes(empresaListSearch.toLowerCase())).length === 0 && (
+              <div className="empty-state">Nenhuma empresa encontrada para "{empresaListSearch}".</div>
+            )}
           </div>
 
           {isAdmin && (
@@ -659,37 +671,50 @@ export default function Dashboard() {
                   defaultValue={contaBancaria ? `${contaBancaria} — ${findContaDesc(contaBancaria)}` : ''}
                   key={`${currentEmpresaId}-${currentLayoutId}`}
                   onBlur={e => salvarContaBancaria(extractCodigoFromPicked(e.target.value))} />
-                <button className="btn secondary" onClick={() => openPicker((conta) => salvarContaBancaria(conta.codigo))}>🔍 Buscar conta</button>
+                <button className="btn secondary" onClick={() => openPicker((conta) => salvarContaBancaria(conta.codigo))}><Search size={13} style={{marginRight:5,verticalAlign:-2}}/>Buscar conta</button>
                 <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
               </div>
             )}
             {isAdmin && currentLayout && (
               <div key={currentLayoutId}>
-                <div className="row">
-                  <label style={{ fontSize: 12.5 }}>Separador:</label>
-                  <select defaultValue={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
-                    <option value="auto">Auto (tab ou ;)</option>
-                    <option value="tab">Tabulação</option>
-                    <option value=";">Ponto e vírgula ( ; )</option>
-                    <option value=",">Vírgula ( , )</option>
-                  </select>
-                  <label style={{ fontSize: 12.5 }}>Col. Data:</label>
-                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_data} onBlur={e => salvarLayout({ col_data: parseInt(e.target.value) || 0 })} />
-                  <label style={{ fontSize: 12.5 }}>Col. Histórico:</label>
-                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_historico} onBlur={e => salvarLayout({ col_historico: parseInt(e.target.value) || 0 })} />
-                  <label style={{ fontSize: 12.5 }}>Col. Valor:</label>
-                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_valor} onBlur={e => salvarLayout({ col_valor: parseInt(e.target.value) || 0 })} />
+                <div className="field-group">
+                  <div className="field-group-label">Posição das colunas (conta do zero)</div>
+                  <div className="row" style={{ marginTop: 0 }}>
+                    <div className="field-inline"><label>Separador</label>
+                      <select defaultValue={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
+                        <option value="auto">Auto (tab ou ;)</option>
+                        <option value="tab">Tabulação</option>
+                        <option value=";">Ponto e vírgula ( ; )</option>
+                        <option value=",">Vírgula ( , )</option>
+                      </select>
+                    </div>
+                    <div className="field-inline"><label>Col. Data</label>
+                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_data} onBlur={e => salvarLayout({ col_data: parseInt(e.target.value) || 0 })} />
+                    </div>
+                    <div className="field-inline"><label>Col. Histórico</label>
+                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_historico} onBlur={e => salvarLayout({ col_historico: parseInt(e.target.value) || 0 })} />
+                    </div>
+                    <div className="field-inline"><label>Col. Valor</label>
+                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_valor} onBlur={e => salvarLayout({ col_valor: parseInt(e.target.value) || 0 })} />
+                    </div>
+                    <div className="field-inline"><label>Col. Detalhamento (-1 = nenhuma)</label>
+                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_detalhamento} onBlur={e => salvarLayout({ col_detalhamento: parseInt(e.target.value) })} />
+                    </div>
+                  </div>
                 </div>
-                <div className="row">
-                  <label style={{ fontSize: 12.5 }}>C/D por:</label>
-                  <select defaultValue={currentLayout.cd_mode} onChange={e => salvarLayout({ cd_mode: e.target.value })}>
-                    <option value="coluna">Coluna específica</option>
-                    <option value="sinal">Sinal do valor (negativo = débito)</option>
-                  </select>
-                  <label style={{ fontSize: 12.5 }}>Col. C/D:</label>
-                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_cd} onBlur={e => salvarLayout({ col_cd: parseInt(e.target.value) || 0 })} />
-                  <label style={{ fontSize: 12.5 }}>Col. Detalhamento (-1 = nenhuma):</label>
-                  <input type="number" style={{ width: 56 }} defaultValue={currentLayout.col_detalhamento} onBlur={e => salvarLayout({ col_detalhamento: parseInt(e.target.value) })} />
+                <div className="field-group">
+                  <div className="field-group-label">Como identificar crédito/débito</div>
+                  <div className="row" style={{ marginTop: 0 }}>
+                    <div className="field-inline"><label>C/D por</label>
+                      <select defaultValue={currentLayout.cd_mode} onChange={e => salvarLayout({ cd_mode: e.target.value })}>
+                        <option value="coluna">Coluna específica</option>
+                        <option value="sinal">Sinal do valor (negativo = débito)</option>
+                      </select>
+                    </div>
+                    <div className="field-inline"><label>Col. C/D</label>
+                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_cd} onBlur={e => salvarLayout({ col_cd: parseInt(e.target.value) || 0 })} />
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -723,7 +748,7 @@ export default function Dashboard() {
                 <div className="row">
                   <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Conta contábil:</label>
                   <input type="text" list="contas-datalist" style={{ minWidth: 280 }} value={codigoDraft} onChange={e => setCodigoDraft(e.target.value)} placeholder="buscar conta…" />
-                  <button className="btn secondary" onClick={() => openPicker((conta) => setCodigoDraft(`${conta.codigo} — ${conta.descricao}`))}>🔍 Buscar conta</button>
+                  <button className="btn secondary" onClick={() => openPicker((conta) => setCodigoDraft(`${conta.codigo} — ${conta.descricao}`))}><Search size={13} style={{marginRight:5,verticalAlign:-2}}/>Buscar conta</button>
                   <button className="btn teal" onClick={salvarRegraDraft} disabled={!keywordDraft.trim() || !codigoDraft.trim()}>Salvar regra e reclassificar</button>
                   <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
                 </div>
@@ -806,21 +831,23 @@ export default function Dashboard() {
               <tbody>
                 {regras.map((r, i) => (
                   <tr key={r.id} title={r.updated_by ? `editado por ${r.updated_by} em ${fmtData(r.updated_at)}` : ''}>
-                    <td className="mono">
-                      <button className="del-btn" style={{ color: 'var(--ink-soft)' }} disabled={!isAdmin || i === 0} onClick={() => moveRegra(r, -1)}>↑</button>
-                      <button className="del-btn" style={{ color: 'var(--ink-soft)' }} disabled={!isAdmin || i === regras.length - 1} onClick={() => moveRegra(r, 1)}>↓</button>
+                    <td>
+                      <div className="icon-btn-group">
+                        <button className="icon-btn" style={{ width: 24, height: 24 }} disabled={!isAdmin || i === 0} onClick={() => moveRegra(r, -1)}><ArrowUp size={13} /></button>
+                        <button className="icon-btn" style={{ width: 24, height: 24 }} disabled={!isAdmin || i === regras.length - 1} onClick={() => moveRegra(r, 1)}><ArrowDown size={13} /></button>
+                      </div>
                     </td>
                     <td><input className="cell-edit" defaultValue={r.palavra_chave} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'palavra_chave', e.target.value)} /></td>
                     <td style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                       <input className="cell-edit" list="contas-datalist" defaultValue={r.codigo ? `${r.codigo} — ${findContaDesc(r.codigo)}` : ''} readOnly={!isAdmin}
                         onBlur={e => isAdmin && updateRegra(r, 'codigo', extractCodigoFromPicked(e.target.value))} />
-                      {isAdmin && <button className="del-btn" title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo', String(conta.codigo)))}>🔍</button>}
+                      {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo', String(conta.codigo)))}><Search size={13} /></button>}
                     </td>
                     <td className="mono" style={{ color: !findContaDesc(r.codigo) ? 'var(--amber)' : (isContaSintetica(r.codigo) ? '#A33' : 'var(--ink-soft)') }}>
                       {!r.codigo ? '' : !findContaDesc(r.codigo) ? 'código não encontrado' : isContaSintetica(r.codigo) ? `⚠ ${findContaDesc(r.codigo)} (SINTÉTICA — evite lançar aqui)` : findContaDesc(r.codigo)}
                     </td>
                     <td><input className="cell-edit" defaultValue={r.descricao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'descricao', e.target.value)} /></td>
-                    <td>{isAdmin && <button className="del-btn" onClick={() => deleteRegra(r)}>✕</button>}</td>
+                    <td>{isAdmin && <button className="icon-btn icon-btn-danger" onClick={() => deleteRegra(r)}><Trash2 size={14} /></button>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -840,7 +867,7 @@ export default function Dashboard() {
               <option value="">Todos os grupos</option>
               {Object.values(GRUPOS_POR_NIVEL1).map(g => <option key={g} value={g}>{g}</option>)}
             </select>
-            <button className="btn secondary" onClick={() => openPicker(() => {})}>🔍 Abrir em janela de busca (F4)</button>
+            <button className="btn secondary" onClick={() => openPicker(() => {})}><Search size={13} style={{marginRight:5,verticalAlign:-2}}/>Abrir em janela de busca (F4)</button>
             {isAdmin && <button className="btn" onClick={addContaManual}>+ Nova conta manual</button>}
           </div>
           <div className="table-wrap" style={{ marginTop: 14 }}>
@@ -864,7 +891,7 @@ export default function Dashboard() {
                         c.tipo === 'S' ? <span className="badge warn">Sintética</span> : c.tipo === 'A' ? <span className="badge ok">Analítica</span> : '—'
                       )}
                     </td>
-                    <td>{isAdmin && <button className="del-btn" onClick={() => deleteConta(c)}>✕</button>}</td>
+                    <td>{isAdmin && <button className="icon-btn icon-btn-danger" onClick={() => deleteConta(c)}><Trash2 size={14} /></button>}</td>
                   </tr>
                 ))}
               </tbody>
