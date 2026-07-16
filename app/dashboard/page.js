@@ -921,6 +921,14 @@ export default function Dashboard() {
             <div className="card" style={{ marginTop: 20 }}>
               <h3>Importar / substituir plano de contas de uma empresa</h3>
               <p className="hint" style={{ marginBottom: 10 }}>Envie o .xls/.xlsx/.csv exportado do Domínio (detecta Sintética/Analítica automaticamente se o arquivo tiver essa coluna), ou cole manualmente no formato <code>codigo;classificacao;descricao;tipo</code> — tipo é <code>A</code> (Analítica) ou <code>S</code> (Sintética), pode deixar em branco se não souber.</p>
+              <p className="hint" style={{ marginBottom: 10 }}>
+                <strong>Não tem o arquivo no formato certo?</strong>{' '}
+                <a href="/modelo-plano-de-contas.xlsx" download style={{ color: 'var(--teal)', fontWeight: 600 }}>
+                  Baixe a planilha modelo aqui
+                </a>{' '}
+                — preencha (ou cole as contas do Domínio nela) e envie de volta. Dica: se o .xls exportado do Domínio
+                não for reconhecido, abra ele no Excel e salve como <code>.xlsx</code> — isso conserta o arquivo.
+              </p>
               <div className="row" style={{ marginTop: 0 }}>
                 <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Empresa de destino:</label>
                 <select value={destEmpresaImport || ''} onChange={e => setDestEmpresaImport(e.target.value)}>
