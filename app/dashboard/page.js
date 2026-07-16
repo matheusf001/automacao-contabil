@@ -3,20 +3,20 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
 const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico'];
-const TAB_LABELS = {
-  empresas: '01 · EMPRESAS',
-  extrato: '02 · EXTRATO',
-  relatorios: '03 · RELATÓRIOS',
-  regras: '04 · REGRAS',
-  contas: '05 · PLANO DE CONTAS',
-  importacao: '06 · IMPORTAÇÃO',
-  historico: '07 · HISTÓRICO',
+const TAB_META = {
+  empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
+  extrato:    { num: '02', label: 'Extrato',         Icon: FileText },
+  relatorios: { num: '03', label: 'Relatórios',      Icon: BarChart3 },
+  regras:     { num: '04', label: 'Regras',          Icon: Settings },
+  contas:     { num: '05', label: 'Plano de Contas', Icon: BookOpen },
+  importacao: { num: '06', label: 'Importação',      Icon: Upload },
+  historico:  { num: '07', label: 'Histórico',       Icon: History },
 };
 
 function fingerprintOf(data, valor, historico) {
@@ -824,37 +824,51 @@ export default function Dashboard() {
       </datalist>
 
       <header className="top">
-        <div>
-          <h1>AUTOMAÇÃO <span>CONTÁBIL</span></h1>
-          <div className="subtitle">{userEmail} · <span className="pill">{isAdmin ? 'admin' : 'operador'}</span> · <a href="#" onClick={(e) => { e.preventDefault(); handleLogout(); }} style={{ color: 'var(--teal)' }}>sair</a></div>
-        </div>
-        <div className="empresa-picker">
-          <label>EMPRESA ATIVA</label>
-          <select value={currentEmpresaId || ''} onChange={e => selecionarEmpresa(e.target.value)}>
-            {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
-          </select>
+        <div className="top-inner">
+          <div className="brand">AUTOMAÇÃO</div>
+          <div className="top-divider" />
+          <div className="empresa-picker">
+            <label>Empresa selecionada</label>
+            <select value={currentEmpresaId || ''} onChange={e => selecionarEmpresa(e.target.value)}>
+              {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+            </select>
+          </div>
+          <div className="user-block">
+            <div className="user-info">
+              <div className="user-email">{userEmail}</div>
+              <div className="user-role">{isAdmin ? 'Administrador' : 'Operador'} · <a href="#" onClick={(e) => { e.preventDefault(); handleLogout(); }}>Sair</a></div>
+            </div>
+            <div className="avatar">{(userEmail || '?').slice(0, 2).toUpperCase()}</div>
+          </div>
         </div>
       </header>
 
       <nav className="tabs">
-        {TABS.map(t => (
-          <button key={t} className={'tab-btn' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}>
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+        <div className="tabs-inner">
+          {TABS.map(t => {
+            const { num, label, Icon } = TAB_META[t];
+            return (
+              <button key={t} className={'tab-btn' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}>
+                <Icon size={15} /><span className="tab-num">{num}</span>{label}
+              </button>
+            );
+          })}
+        </div>
       </nav>
       <div key={tab} className="fade-in">
 
       {tab === 'empresas' && (
         <section className="panel">
+          <div className={isAdmin ? 'empresas-layout' : ''}>
+          <div>
           <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
             <div>
-              <h2>Empresas</h2>
-              <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} cadastradas — cada uma com seu próprio plano de contas e regras.
+              <h2>Gestão de Empresas</h2>
+              <p className="hint" style={{ marginBottom: 0 }}>Gerencie as {empresas.length} entidades cadastradas — cada uma com seu próprio plano de contas e regras.
                 {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
               </p>
             </div>
-            {isAdmin && <button className="btn teal" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
+            {isAdmin && <button className="btn secondary" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
           </div>
 
           <div className="search-hero">
@@ -901,7 +915,7 @@ export default function Dashboard() {
               <>
                 {recentesList.length > 0 && (
                   <>
-                    <div className="section-label"><Clock size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Usadas recentemente</div>
+                    <div className="section-label"><Clock size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Seleção rápida — usadas recentemente</div>
                     <div className="empresa-grid">{recentesList.map(renderCard)}</div>
                   </>
                 )}
@@ -917,32 +931,33 @@ export default function Dashboard() {
             );
           })()}
 
+          </div>
+
           {isAdmin && (
-            <div className="card" style={{ marginTop: 20 }}>
-              <h3>Importar / substituir plano de contas de uma empresa</h3>
-              <p className="hint" style={{ marginBottom: 10 }}>Envie o .xls/.xlsx/.csv exportado do Domínio (detecta Sintética/Analítica automaticamente se o arquivo tiver essa coluna), ou cole manualmente no formato <code>codigo;classificacao;descricao;tipo</code> — tipo é <code>A</code> (Analítica) ou <code>S</code> (Sintética), pode deixar em branco se não souber.</p>
-              <p className="hint" style={{ marginBottom: 10 }}>
-                <strong>Não tem o arquivo no formato certo?</strong>{' '}
+            <div className="card destaque" style={{ marginTop: 0 }}>
+              <h3 style={{ fontSize: 15.5 }}>Atualizar Plano de Contas</h3>
+              <p className="hint" style={{ marginBottom: 4 }}>Substitua o plano atual enviando um arquivo <code>.xls</code>/<code>.xlsx</code>/<code>.csv</code> ou colando os dados abaixo.</p>
+              <p className="hint" style={{ marginBottom: 0 }}>
                 <a href="/modelo-plano-de-contas.xlsx" download style={{ color: 'var(--teal)', fontWeight: 600 }}>
-                  Baixe a planilha modelo aqui
+                  Baixar planilha modelo
                 </a>{' '}
-                — preencha (ou cole as contas do Domínio nela) e envie de volta. Dica: se o .xls exportado do Domínio
-                não for reconhecido, abra ele no Excel e salve como <code>.xlsx</code> — isso conserta o arquivo.
+                — preencha e envie de volta. Se o .xls do Domínio não for reconhecido, abra no Excel e salve como <code>.xlsx</code>.
               </p>
-              <div className="row" style={{ marginTop: 0 }}>
-                <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Empresa de destino:</label>
-                <select value={destEmpresaImport || ''} onChange={e => setDestEmpresaImport(e.target.value)}>
-                  {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
-                </select>
-              </div>
-              <div className="row"><input type="file" ref={fileInputRef} accept=".xls,.xlsx,.csv,.txt" /></div>
-              <textarea ref={pasteRef} placeholder={'7;1.1.1.02;BANCOS CONTA MOVIMENTO;S\n8;1.1.1.02.001;BANCO DO BRASIL;A'} style={{ minHeight: 80, marginTop: 8 }} />
+              <div className="field-label">Empresa destino</div>
+              <select style={{ width: '100%' }} value={destEmpresaImport || ''} onChange={e => setDestEmpresaImport(e.target.value)}>
+                {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+              </select>
+              <div className="field-label">Importação de arquivo</div>
+              <input type="file" ref={fileInputRef} accept=".xls,.xlsx,.csv,.txt" style={{ width: '100%' }} />
+              <div className="field-label">Entrada manual (CSV)</div>
+              <textarea ref={pasteRef} placeholder={'7;1.1.1.02;BANCOS CONTA MOVIMENTO;S\n8;1.1.1.02.001;BANCO DO BRASIL;A'} style={{ minHeight: 90 }} />
               <div className="row">
-                <button className="btn" onClick={importarPlano}>Importar (substitui o plano de contas atual)</button>
-                <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>{importStatus}</span>
+                <button className="btn teal full" onClick={importarPlano}>Processar e Substituir Plano</button>
               </div>
+              {importStatus && <div style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: 8 }}>{importStatus}</div>}
             </div>
           )}
+          </div>
         </section>
       )}
 
@@ -1482,7 +1497,10 @@ export default function Dashboard() {
 
       </div>
 
-      <div className="footer-note">Dados salvos no Supabase — acessíveis de qualquer lugar por qualquer login autorizado. Sugestões da IA nunca são aplicadas sem a sua confirmação.</div>
+      <footer className="statusbar">
+        <div><span className="dot" />Conectado · dados salvos no Supabase, acessíveis por qualquer login autorizado</div>
+        <div>Sugestões da IA nunca são aplicadas sem a sua confirmação</div>
+      </footer>
     </div>
   );
 }
