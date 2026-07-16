@@ -212,3 +212,99 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 .toast-error{ background: var(--danger); }
 .toast-success{ background: var(--teal-dark); }
 .toast-info{ background: var(--ink); }
+
+/* =====================================================================
+   LOGIN ANIMADO — inspirado no "Login/Signup Animation #2" (CodeCandy):
+   marca com gradiente (background-clip: text) e painel com giro 3D
+   suave (perspective + translate3d/rotateY), adaptado pro nosso site.
+   ===================================================================== */
+.auth-bg{
+  min-height: 100vh; display:flex; align-items:center; justify-content:center;
+  background:
+    radial-gradient(900px 500px at 15% 10%, #E8F1EF 0%, transparent 60%),
+    radial-gradient(800px 500px at 90% 90%, #E4ECF7 0%, transparent 55%),
+    var(--paper);
+  padding: 24px;
+  perspective: 1500px; /* dá profundidade pro giro do cartão */
+}
+.auth-card{
+  display:flex; width: 860px; max-width: 100%; min-height: 480px;
+  background: var(--paper-raised); border-radius: 18px; overflow:hidden;
+  box-shadow: 0 20px 60px rgba(15,23,42,0.14), 0 4px 14px rgba(15,23,42,0.08);
+  transform-style: preserve-3d; backface-visibility: hidden; will-change: transform;
+  animation: card-enter 860ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes card-enter{
+  0%   { transform: translate3d(0, 26px, 0) rotateY(-7deg); opacity: 0; }
+  60%  { transform: translate3d(0, -4px, 0) rotateY(2.4deg); opacity: 1; }
+  100% { transform: translate3d(0, 0, 0) rotateY(0); opacity: 1; }
+}
+.auth-card.auth-leaving{ animation: card-leave 520ms ease-in forwards; }
+@keyframes card-leave{
+  0%   { transform: translate3d(0,0,0) rotateY(0); opacity:1; }
+  100% { transform: translate3d(-60px,0,0) rotateY(-14deg); opacity:0; }
+}
+
+/* painel esquerdo com gradiente e "bolhas" flutuando */
+.auth-side{
+  position:relative; flex: 1 1 46%; min-width: 300px; color:#fff; overflow:hidden;
+  background: linear-gradient(135deg, #0E6E63 0%, #10897B 45%, #2563EB 130%);
+  display:flex; align-items:center;
+}
+.auth-side-inner{ position:relative; z-index:2; padding: 44px 40px; animation: side-in 900ms 150ms cubic-bezier(0.22,1,0.36,1) both; }
+@keyframes side-in{ from{ transform: translate3d(-18px,0,0); opacity:0; } to{ transform:none; opacity:1; } }
+.auth-logo{ font-size: 11.5px; font-weight:800; letter-spacing: 0.14em; opacity:0.9; margin-bottom: 26px; }
+.auth-logo span{ margin: 0 5px; opacity:0.6; }
+.auth-side h2{ font-size: 30px; line-height:1.15; margin:0 0 14px; font-weight:800; letter-spacing:-0.01em; }
+.auth-side p{ font-size: 13.5px; line-height: 1.65; opacity: 0.88; margin:0; max-width: 300px; }
+.auth-side-foot{ margin-top: 34px; font-size: 11px; opacity: 0.65; letter-spacing: 0.03em; }
+.auth-blob{ position:absolute; border-radius:50%; filter: blur(2px); opacity:0.16; background:#fff; animation: blob-float 9s ease-in-out infinite; }
+.auth-blob.b1{ width: 220px; height:220px; top:-70px; right:-60px; }
+.auth-blob.b2{ width: 150px; height:150px; bottom:-50px; left:-30px; animation-delay: 2.5s; }
+@keyframes blob-float{ 0%,100%{ transform: translateY(0) scale(1);} 50%{ transform: translateY(16px) scale(1.06);} }
+
+/* painel do formulário */
+.auth-form{ flex: 1 1 54%; padding: 48px 46px; display:flex; flex-direction:column; justify-content:center; animation: side-in 900ms 260ms cubic-bezier(0.22,1,0.36,1) both; }
+.auth-wordmark{
+  font-size: 21px; font-weight: 900; letter-spacing: -0.01em; margin: 0 0 4px;
+  background: linear-gradient(90deg, var(--teal-dark), var(--teal) 55%, #2563EB);
+  background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.auth-sub{ font-size: 12px; color: var(--ink-soft); margin-bottom: 26px; }
+.auth-form label{ font-size:12px; color:var(--ink-soft); font-weight:600; display:block; margin-bottom:6px; }
+.auth-field{
+  display:flex; align-items:center; gap:9px; border:1px solid var(--line); border-radius: 10px;
+  padding: 0 12px; margin-bottom: 16px; background:#fff; color: var(--ink-soft);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.auth-field:focus-within{ border-color: var(--teal); box-shadow: 0 0 0 3px rgba(14,110,99,0.12); color: var(--teal); }
+.auth-field input{ flex:1; border:none !important; outline:none; padding: 11px 0; font-size: 13.5px; background:transparent; color: var(--ink); }
+.auth-eye{ background:none; border:none; cursor:pointer; color: var(--ink-soft); display:flex; padding:4px; border-radius:6px; }
+.auth-eye:hover{ color: var(--ink); background:#F1F5F9; }
+.auth-submit{
+  width:100%; display:flex; align-items:center; justify-content:center; gap:8px;
+  font-family: var(--sans); font-size: 14px; font-weight: 700; padding: 12px 16px; margin-top: 6px;
+  border-radius: 10px; border:none; cursor:pointer; color:#fff;
+  background: linear-gradient(90deg, var(--teal-dark), var(--teal));
+  transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+}
+.auth-submit:hover:not(:disabled){ transform: translateY(-1px); box-shadow: 0 8px 20px rgba(14,110,99,0.28); filter: brightness(1.04); }
+.auth-submit:active:not(:disabled){ transform: translateY(0); box-shadow:none; }
+.auth-submit:disabled{ opacity: 0.55; cursor: not-allowed; }
+.auth-shake{ animation: shake 0.4s ease; }
+@keyframes shake{ 0%,100%{transform:translateX(0);} 25%{transform:translateX(-6px);} 50%{transform:translateX(5px);} 75%{transform:translateX(-3px);} }
+@media (max-width: 720px){
+  .auth-side{ display:none; }         /* no celular, mostra só o formulário */
+  .auth-form{ padding: 36px 28px; }
+}
+@media (prefers-reduced-motion: reduce){
+  .auth-card, .auth-side-inner, .auth-form, .auth-blob{ animation: none !important; }
+}
+
+/* --- referência de relatório financeiro na tabela do extrato --- */
+.ref-relatorio{
+  margin-top: 4px; font-size: 11px; color: #1D4ED8; background: #EEF4FD;
+  border: 1px solid #D5E3F8; border-radius: 6px; padding: 3px 8px; display:inline-block; line-height:1.4;
+}
+.ref-relatorio strong{ font-weight: 700; }
+.ref-relatorio em{ color: #64748B; font-style: normal; }

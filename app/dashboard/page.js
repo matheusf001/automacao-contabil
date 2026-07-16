@@ -3,18 +3,20 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp } from 'lucide-react';
-import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta } from '@/lib/planoParser';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet } from 'lucide-react';
+import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
+import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
-const TABS = ['empresas', 'extrato', 'regras', 'contas', 'importacao', 'historico'];
+const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico'];
 const TAB_LABELS = {
   empresas: '01 · EMPRESAS',
   extrato: '02 · EXTRATO',
-  regras: '03 · REGRAS',
-  contas: '04 · PLANO DE CONTAS',
-  importacao: '05 · IMPORTAÇÃO',
-  historico: '06 · HISTÓRICO',
+  relatorios: '03 · RELATÓRIOS',
+  regras: '04 · REGRAS',
+  contas: '05 · PLANO DE CONTAS',
+  importacao: '06 · IMPORTAÇÃO',
+  historico: '07 · HISTÓRICO',
 };
 
 function fingerprintOf(data, valor, historico) {
@@ -81,6 +83,19 @@ export default function Dashboard() {
   const [recentes, setRecentes] = useState([]);
   const [verTodas, setVerTodas] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
+
+  // ---------- RELATÓRIOS FINANCEIROS ----------
+  const [relatorios, setRelatorios] = useState([]);           // lista de relatórios enviados
+  const [relTipo, setRelTipo] = useState('pagamentos');       // tipo do upload em andamento
+  const [relRows, setRelRows] = useState(null);               // linhas cruas do arquivo em análise
+  const [relNomeArquivo, setRelNomeArquivo] = useState('');
+  const [relColunas, setRelColunas] = useState([]);           // estatísticas por coluna (pra prévia)
+  const [relMapa, setRelMapa] = useState(null);               // {colData, colValor, colsDescricao, colCategoria}
+  const [relSalvando, setRelSalvando] = useState(false);
+  const [relBusca, setRelBusca] = useState('');
+  const [relBuscaResultados, setRelBuscaResultados] = useState(null);
+  const relFileInputRef = useRef(null);
+  const indicesRelatorioRef = useRef({ D: null, C: null });   // índices data|valor pro cruzamento com o extrato
 
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
@@ -175,7 +190,7 @@ export default function Dashboard() {
   useEffect(() => { if (!checkingAuth) { loadEmpresas(); loadLayouts(); } }, [checkingAuth]);
 
   useEffect(() => {
-    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); loadBaseAprendizado(currentEmpresaId); }
+    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); loadBaseAprendizado(currentEmpresaId); loadRelatorios(currentEmpresaId); }
   }, [currentEmpresaId]);
 
   useEffect(() => {
@@ -422,6 +437,116 @@ export default function Dashboard() {
     }));
   }
 
+  // ---------- RELATÓRIOS FINANCEIROS (funções) ----------
+  async function loadRelatorios(empresaId) {
+    const { data, error } = await supabase.from('relatorios_financeiros').select('*')
+      .eq('empresa_id', empresaId).order('criado_em', { ascending: false }).limit(60);
+    if (error) { console.error(error); setRelatorios([]); indicesRelatorioRef.current = { D: null, C: null }; return; }
+    setRelatorios(data || []);
+    await carregarIndicesRelatorio(empresaId);
+  }
+
+  // Baixa os itens dos relatórios da empresa e monta os índices data|valor usados no
+  // cruzamento com o extrato (pagamentos casam com débitos, recebimentos com créditos).
+  async function carregarIndicesRelatorio(empresaId) {
+    try {
+      const { data, error } = await withTimeout(
+        supabase.from('relatorio_itens').select('tipo,data,valor,descricao,categoria')
+          .eq('empresa_id', empresaId).limit(9000),
+        20000, 'itens de relatório'
+      );
+      if (error) { console.error(error); indicesRelatorioRef.current = { D: null, C: null }; return; }
+      const pag = (data || []).filter(i => i.tipo === 'pagamentos');
+      const rec = (data || []).filter(i => i.tipo === 'recebimentos');
+      indicesRelatorioRef.current = {
+        D: pag.length ? construirIndiceRelatorio(pag) : null,
+        C: rec.length ? construirIndiceRelatorio(rec) : null,
+      };
+    } catch (err) {
+      console.error(err);
+      indicesRelatorioRef.current = { D: null, C: null };
+    }
+  }
+
+  async function handleRelatorioFile(file) {
+    try {
+      const rows = await lerArquivoEmLinhas(file);
+      if (!rows || rows.length === 0) { notify('O arquivo veio vazio ou não foi possível ler.'); return; }
+      const { colunas, sugestao } = detectarColunas(rows);
+      if (sugestao.colData === -1 || sugestao.colValor === -1) {
+        notify('Não achei colunas de Data e Valor automaticamente — ajuste manualmente na prévia abaixo.', 'info');
+      }
+      setRelRows(rows);
+      setRelNomeArquivo(file.name);
+      setRelColunas(colunas);
+      setRelMapa({
+        colData: sugestao.colData,
+        colValor: sugestao.colValor,
+        colsDescricao: sugestao.colsDescricao,
+        colCategoria: -1,
+      });
+    } catch (err) {
+      notify('Erro ao ler o relatório: ' + err.message);
+    }
+  }
+
+  const relPreviewItens = (relRows && relMapa && relMapa.colData >= 0 && relMapa.colValor >= 0)
+    ? extrairItens(relRows, relMapa) : [];
+
+  async function salvarRelatorio() {
+    if (!relRows || !relMapa) return;
+    const itens = extrairItens(relRows, relMapa);
+    if (itens.length === 0) { notify('Nenhum item válido reconhecido — confira as colunas de Data e Valor na prévia.'); return; }
+    setRelSalvando(true);
+    try {
+      const datas = itens.map(i => i.data).sort();
+      const { data: cab, error: errCab } = await supabase.from('relatorios_financeiros').insert({
+        empresa_id: currentEmpresaId, nome_arquivo: relNomeArquivo, tipo: relTipo,
+        total_itens: itens.length, periodo_inicio: datas[0], periodo_fim: datas[datas.length - 1],
+        enviado_por: userEmail,
+      }).select().single();
+      if (errCab) { notify('Erro ao salvar relatório: ' + errCab.message); return; }
+
+      const linhas = itens.map(i => ({
+        relatorio_id: cab.id, empresa_id: currentEmpresaId, tipo: relTipo,
+        data: i.data, valor: i.valor, descricao: i.descricao, categoria: i.categoria || null,
+      }));
+      const chunkSize = 400;
+      for (let i = 0; i < linhas.length; i += chunkSize) {
+        const { error } = await supabase.from('relatorio_itens').insert(linhas.slice(i, i + chunkSize));
+        if (error) { notify('Erro ao salvar itens: ' + error.message); return; }
+      }
+      notify(`Relatório salvo: ${itens.length} itens de ${fmtISOparaBR(datas[0])} a ${fmtISOparaBR(datas[datas.length - 1])}.`, 'success');
+      setRelRows(null); setRelMapa(null); setRelColunas([]); setRelNomeArquivo('');
+      if (relFileInputRef.current) relFileInputRef.current.value = '';
+      await loadRelatorios(currentEmpresaId);
+    } finally {
+      setRelSalvando(false);
+    }
+  }
+
+  async function excluirRelatorio(rel) {
+    if (!confirm(`Excluir o relatório "${rel.nome_arquivo || rel.tipo}" (${rel.total_itens} itens)? Os cruzamentos com o extrato deixam de aparecer.`)) return;
+    const { error } = await supabase.from('relatorios_financeiros').delete().eq('id', rel.id);
+    if (error) { notify('Erro ao excluir: ' + error.message); return; }
+    loadRelatorios(currentEmpresaId);
+  }
+
+  async function buscarNosRelatorios() {
+    const termo = relBusca.trim();
+    if (!termo) { setRelBuscaResultados(null); return; }
+    let query = supabase.from('relatorio_itens').select('tipo,data,valor,descricao,categoria')
+      .eq('empresa_id', currentEmpresaId).limit(100);
+    const comoData = normalizarDataISO(termo);
+    const comoValor = termo.match(/^[\d.,]+$/) ? parseFloat(termo.replace(/\./g, '').replace(',', '.')) : null;
+    if (comoData) query = query.eq('data', comoData);
+    else if (comoValor !== null && isFinite(comoValor)) query = query.eq('valor', comoValor);
+    else query = query.ilike('descricao', `%${termo}%`);
+    const { data, error } = await query.order('data', { ascending: false });
+    if (error) { notify('Erro na busca: ' + error.message); return; }
+    setRelBuscaResultados(data || []);
+  }
+
   function withTimeout(promise, ms, label) {
     return Promise.race([
       promise,
@@ -466,7 +591,15 @@ export default function Dashboard() {
       }
 
       const marcado = withFingerprint.map(r => existentes.has(r.fingerprint) ? { ...r, status: 'duplicado' } : r);
-      const comSugestao = marcado.map(r => {
+
+      // Cruza cada lançamento com os relatórios financeiros da empresa (por data + valor):
+      // saída do banco procura nos PAGAMENTOS, entrada procura nos RECEBIMENTOS.
+      const comRelatorio = marcado.map(r => {
+        const ref = cruzarComRelatorio(r, indicesRelatorioRef.current);
+        return ref ? { ...r, refRelatorio: ref } : r;
+      });
+
+      const comSugestao = comRelatorio.map(r => {
         if (r.status !== 'sem match') return r;
         const sugestao = sugerirConta(r, baseAprendizadoRef.current, contaBancaria);
         return sugestao ? { ...r, sugestao } : r;
@@ -566,10 +699,21 @@ export default function Dashboard() {
       const contasAnaliticas = planoContas
         .filter(c => c.tipo !== 'S' && c.codigo && c.descricao)
         .map(c => ({ codigo: c.codigo, descricao: c.descricao }));
-      const exemplos = baseAprendizadoRef.current.slice(-50).map(e => ({
-        texto: e.historico,
-        codigo: String(e.contaDevedora) === String(contaBancaria) ? e.contaCredora : e.contaDevedora,
-      })).filter(e => e.codigo);
+
+      // Em vez de mandar só os últimos 50 exemplos, escolhemos os MAIS PARECIDOS
+      // com o lote que está sem match — assim a IA recebe exatamente os precedentes
+      // que ajudam nesses lançamentos ("aprendizado" que melhora a cada confirmação).
+      const tokensLote = tokenizarTexto(semMatch.map(r => (r.historico || '') + ' ' + (r.detalhamento || '')).join(' '));
+      const exemplos = baseAprendizadoRef.current
+        .map(e => ({
+          texto: e.historico,
+          codigo: String(e.contaDevedora) === String(contaBancaria) ? e.contaCredora : e.contaDevedora,
+          relevancia: similaridadeJaccard(tokensLote, e.tokens),
+        }))
+        .filter(e => e.codigo)
+        .sort((a, b) => b.relevancia - a.relevancia)
+        .slice(0, 50)
+        .map(e => ({ texto: e.texto, codigo: e.codigo }));
       const regrasResumo = regras.filter(r => r.palavra_chave && r.codigo)
         .map(r => ({ palavra_chave: r.palavra_chave, codigo: r.codigo }));
 
@@ -580,6 +724,10 @@ export default function Dashboard() {
           lancamentos: semMatch.slice(0, 60).map(r => ({
             id: r.__idx, data: r.data, valor: r.valor, cd: r.cd,
             historico: r.historico, detalhamento: r.detalhamento,
+            // contexto vindo do relatório financeiro da empresa (quando data+valor bateram)
+            contexto: r.refRelatorio
+              ? `${r.refRelatorio.item.categoria ? '[' + r.refRelatorio.item.categoria + '] ' : ''}${r.refRelatorio.item.descricao}`
+              : undefined,
           })),
           contas: contasAnaliticas, regras: regrasResumo, exemplos,
         }),
@@ -909,6 +1057,12 @@ export default function Dashboard() {
                     {processedRows.filter(r => r.status === 'duplicado').length} já importados antes (duplicado)
                   </div>
                 )}
+                {processedRows.some(r => r.refRelatorio) && (
+                  <div className="stat" style={{ background: '#E8F0FB', color: '#1D4ED8', borderColor: '#C8DAF5' }}>
+                    <FileSpreadsheet size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+                    {processedRows.filter(r => r.refRelatorio).length} identificados no relatório financeiro
+                  </div>
+                )}
               </div>
               <div className="row" style={{ marginTop: 6 }}>
                 {processedRows.some(r => r.status === 'sem match' && !r.sugestaoIA) && (
@@ -935,7 +1089,20 @@ export default function Dashboard() {
                   {processedRows.map((r, i) => (
                     <tr key={i} className={r.status !== 'automatico' ? 'warn-row' : ''}>
                       <td className="mono">{r.data}</td><td className="num">{r.valor}</td>
-                      <td>{renderClickableText(r.historico)}</td>
+                      <td>
+                        {renderClickableText(r.historico)}
+                        {r.refRelatorio && (
+                          <div className="ref-relatorio" title={r.refRelatorio.tipo === 'exato'
+                            ? 'Data e valor batem com um item do relatório financeiro desta empresa'
+                            : `Mesmo valor no relatório, com ${r.refRelatorio.diasDiferenca} dia(s) de diferença na data`}>
+                            <FileSpreadsheet size={11} style={{ verticalAlign: -1.5, marginRight: 4 }} />
+                            {r.refRelatorio.item.categoria ? <strong>{r.refRelatorio.item.categoria}: </strong> : <strong>relatório: </strong>}
+                            {r.refRelatorio.item.descricao.slice(0, 90)}
+                            {r.refRelatorio.tipo === 'aproximado' && <em> (±{r.refRelatorio.diasDiferenca}d)</em>}
+                            {r.refRelatorio.outros > 0 && <em> (+{r.refRelatorio.outros} itens iguais)</em>}
+                          </div>
+                        )}
+                      </td>
                       <td>{renderClickableText(r.detalhamento)}</td>
                       <td className="mono">{r.cd}</td>
                       <td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
@@ -981,6 +1148,164 @@ export default function Dashboard() {
                 </tbody>
               </table></div>
             </>
+          )}
+        </section>
+      )}
+
+      {tab === 'relatorios' && (
+        <section className="panel">
+          <h2>Relatórios financeiros — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
+          <p className="hint">
+            Envie os relatórios que a empresa manda (contas pagas, recebimentos, folha etc.). O site cruza cada lançamento
+            do extrato com esses relatórios <strong>por data + valor</strong> e mostra do que se trata o pagamento/recebimento —
+            e a IA usa essa informação pra sugerir a conta contábil certa. Também serve como consulta rápida.
+          </p>
+
+          <div className="card">
+            <h3>Enviar novo relatório</h3>
+            <div className="row" style={{ marginTop: 8 }}>
+              <div className="field-inline"><label>Tipo do relatório</label>
+                <select value={relTipo} onChange={e => setRelTipo(e.target.value)}>
+                  <option value="pagamentos">Pagamentos (saídas: contas pagas, folha, guias…)</option>
+                  <option value="recebimentos">Recebimentos (entradas: títulos recebidos, vendas…)</option>
+                </select>
+              </div>
+              <div className="field-inline"><label>Arquivo (.xls / .xlsx / .csv)</label>
+                <input type="file" ref={relFileInputRef} accept=".xls,.xlsx,.csv,.txt"
+                  onChange={e => { if (e.target.files?.[0]) handleRelatorioFile(e.target.files[0]); }} />
+              </div>
+            </div>
+
+            {relRows && relMapa && (
+              <>
+                <div className="field-group">
+                  <div className="field-group-label">Confira as colunas detectadas (ajuste se precisar)</div>
+                  <div className="row" style={{ marginTop: 0 }}>
+                    <div className="field-inline"><label>Coluna da DATA (do pagamento/recebimento)</label>
+                      <select value={relMapa.colData} onChange={e => setRelMapa(m => ({ ...m, colData: parseInt(e.target.value) }))}>
+                        <option value={-1}>— escolher —</option>
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                      </select>
+                    </div>
+                    <div className="field-inline"><label>Coluna do VALOR</label>
+                      <select value={relMapa.colValor} onChange={e => setRelMapa(m => ({ ...m, colValor: parseInt(e.target.value) }))}>
+                        <option value={-1}>— escolher —</option>
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                      </select>
+                    </div>
+                    <div className="field-inline"><label>Coluna de CATEGORIA (opcional)</label>
+                      <select value={relMapa.colCategoria} onChange={e => setRelMapa(m => ({ ...m, colCategoria: parseInt(e.target.value) }))}>
+                        <option value={-1}>— nenhuma —</option>
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <label style={{ fontSize: 11, color: 'var(--ink-soft)', fontWeight: 600 }}>Colunas de DESCRIÇÃO (fornecedor, histórico… — pode marcar várias):</label>
+                    <div className="row" style={{ marginTop: 6 }}>
+                      {relColunas.filter(c => c.preenchidas > 0).map(c => (
+                        <label key={c.indice} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid var(--line)', borderRadius: 6, padding: '4px 8px', background: relMapa.colsDescricao.includes(c.indice) ? 'var(--teal-bg)' : '#fff', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={relMapa.colsDescricao.includes(c.indice)}
+                            onChange={e => setRelMapa(m => ({
+                              ...m,
+                              colsDescricao: e.target.checked
+                                ? [...m.colsDescricao, c.indice].sort((a, b) => a - b)
+                                : m.colsDescricao.filter(x => x !== c.indice),
+                            }))} />
+                          Col {c.indice}: <span style={{ color: 'var(--ink-soft)' }}>{(c.exemplo || 'vazia').slice(0, 22)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="stats">
+                  <div className={'stat ' + (relPreviewItens.length ? 'ok' : 'warn')}>
+                    {relPreviewItens.length} itens reconhecidos de {relRows.length} linhas do arquivo
+                  </div>
+                  {relPreviewItens.length > 0 && (
+                    <div className="stat">
+                      período: {fmtISOparaBR(relPreviewItens.map(i => i.data).sort()[0])} a {fmtISOparaBR(relPreviewItens.map(i => i.data).sort().slice(-1)[0])}
+                    </div>
+                  )}
+                </div>
+                {relPreviewItens.length > 0 && (
+                  <div className="table-wrap" style={{ maxHeight: 260 }}>
+                    <table>
+                      <thead><tr><th>DATA</th><th className="num">VALOR</th><th>DESCRIÇÃO</th><th>CATEGORIA</th></tr></thead>
+                      <tbody>
+                        {relPreviewItens.slice(0, 12).map((i, k) => (
+                          <tr key={k}>
+                            <td className="mono">{fmtISOparaBR(i.data)}</td>
+                            <td className="num">{i.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                            <td>{i.descricao}</td><td>{i.categoria || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="row">
+                  <button className="btn teal" onClick={salvarRelatorio} disabled={relSalvando || relPreviewItens.length === 0}>
+                    {relSalvando ? (<><span className="spinner" /> Salvando…</>) : `Salvar relatório (${relPreviewItens.length} itens)`}
+                  </button>
+                  <button className="btn secondary" onClick={() => { setRelRows(null); setRelMapa(null); setRelColunas([]); if (relFileInputRef.current) relFileInputRef.current.value = ''; }}>Cancelar</button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="card">
+            <h3>Consultar itens dos relatórios</h3>
+            <p className="hint" style={{ marginBottom: 8 }}>Busque por texto (ex: fornecedor), por valor exato (ex: 3600,00) ou por data (ex: 01/04/2026).</p>
+            <div className="row" style={{ marginTop: 0 }}>
+              <input type="search" style={{ minWidth: 300 }} placeholder="fornecedor, valor ou data…" value={relBusca}
+                onChange={e => setRelBusca(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') buscarNosRelatorios(); }} />
+              <button className="btn secondary" onClick={buscarNosRelatorios}><Search size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Buscar</button>
+              {relBuscaResultados && <button className="btn secondary" onClick={() => { setRelBusca(''); setRelBuscaResultados(null); }}>Limpar</button>}
+            </div>
+            {relBuscaResultados && (
+              relBuscaResultados.length === 0
+                ? <div className="empty-state" style={{ padding: '24px 10px' }}>Nada encontrado nos relatórios desta empresa.</div>
+                : <div className="table-wrap" style={{ maxHeight: 300 }}>
+                    <table>
+                      <thead><tr><th>DATA</th><th className="num">VALOR</th><th>TIPO</th><th>DESCRIÇÃO</th><th>CATEGORIA</th></tr></thead>
+                      <tbody>
+                        {relBuscaResultados.map((i, k) => (
+                          <tr key={k}>
+                            <td className="mono">{fmtISOparaBR(i.data)}</td>
+                            <td className="num">{Number(i.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                            <td>{i.tipo === 'pagamentos' ? <span className="badge warn">saída</span> : <span className="badge ok">entrada</span>}</td>
+                            <td>{i.descricao}</td><td>{i.categoria || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+            )}
+          </div>
+
+          <h3 style={{ fontSize: 13, margin: '18px 0 6px' }}>Relatórios enviados</h3>
+          {relatorios.length === 0 ? (
+            <div className="empty-state">Nenhum relatório enviado ainda para esta empresa.</div>
+          ) : (
+            <div className="table-wrap"><table>
+              <thead><tr><th>ENVIADO EM</th><th>ARQUIVO</th><th>TIPO</th><th className="num">ITENS</th><th>PERÍODO</th><th>POR</th><th style={{ width: 34 }}></th></tr></thead>
+              <tbody>
+                {relatorios.map(rel => (
+                  <tr key={rel.id}>
+                    <td className="mono">{fmtData(rel.criado_em)}</td>
+                    <td>{rel.nome_arquivo || '—'}</td>
+                    <td>{rel.tipo === 'pagamentos' ? <span className="badge warn">pagamentos</span> : <span className="badge ok">recebimentos</span>}</td>
+                    <td className="num">{rel.total_itens}</td>
+                    <td className="mono">{fmtISOparaBR(rel.periodo_inicio)} — {fmtISOparaBR(rel.periodo_fim)}</td>
+                    <td className="mono">{rel.enviado_por}</td>
+                    <td><button className="icon-btn icon-btn-danger" title="Excluir relatório" onClick={() => excluirRelatorio(rel)}><Trash2 size={14} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table></div>
           )}
         </section>
       )}

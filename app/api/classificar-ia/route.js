@@ -34,7 +34,7 @@ export async function POST(req) {
     const listaRegras = (regras || []).slice(0, 80).map(r => `"${r.palavra_chave}" → conta ${r.codigo}`).join('\n');
     const listaExemplos = (exemplos || []).slice(0, 50).map(e => `"${e.texto}" → conta ${e.codigo}`).join('\n');
     const listaLanc = lote.map(l =>
-      `${l.id} | ${l.data} | ${l.cd === 'D' ? 'SAÍDA (pagamento)' : 'ENTRADA (recebimento)'} | R$ ${l.valor} | ${l.historico}${l.detalhamento ? ' — ' + l.detalhamento : ''}`
+      `${l.id} | ${l.data} | ${l.cd === 'D' ? 'SAÍDA (pagamento)' : 'ENTRADA (recebimento)'} | R$ ${l.valor} | ${l.historico}${l.detalhamento ? ' — ' + l.detalhamento : ''}${l.contexto ? ` || RELATÓRIO FINANCEIRO DA EMPRESA (mesma data e valor): ${String(l.contexto).slice(0, 200)}` : ''}`
     ).join('\n');
 
     const prompt = `Você é um assistente de contabilidade brasileira. Sua tarefa: para cada lançamento de extrato bancário abaixo, sugerir a conta contábil de CONTRAPARTIDA (a conta de despesa/receita/fornecedor/cliente — a conta do banco já é conhecida).
@@ -43,6 +43,7 @@ REGRAS OBRIGATÓRIAS:
 1. Use SOMENTE códigos da lista "PLANO DE CONTAS DA EMPRESA" abaixo. Nunca invente um código.
 2. Cada empresa tem seu próprio padrão de contas — as regras e os exemplos abaixo mostram como ESTA empresa costuma classificar. Siga esse padrão sempre que possível.
 3. SAÍDA (pagamento) normalmente vai para conta de despesa/custo/fornecedor. ENTRADA (recebimento) normalmente vai para conta de receita/cliente.
+3b. Quando um lançamento tiver o campo "RELATÓRIO FINANCEIRO DA EMPRESA", essa é a informação MAIS CONFIÁVEL sobre do que se trata (veio do sistema financeiro do cliente, casado por data e valor) — dê prioridade a ela sobre o texto do banco. Ex: se o relatório diz "COMISSAO DE VENDAS", classifique como comissão mesmo que o histórico do banco diga só "PIX ENVIADO".
 4. Se não tiver confiança razoável em um lançamento, simplesmente NÃO o inclua na resposta.
 5. Responda APENAS com um array JSON, sem nenhum texto antes ou depois, no formato:
 [{"id": 0, "codigo": 123, "confianca": 85, "motivo": "frase curta explicando"}]

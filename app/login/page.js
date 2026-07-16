@@ -2,13 +2,16 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { Eye, EyeOff, Lock, User, ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [saindo, setSaindo] = useState(false); // animação de saída quando o login dá certo
 
   async function handleLogin(e) {
     e.preventDefault();
@@ -27,29 +30,62 @@ export default function LoginPage() {
     }
 
     const { error } = await supabase.auth.signInWithPassword({ email: emailToUse, password });
-    setLoading(false);
     if (error) {
+      setLoading(false);
       setError('Usuário ou senha incorretos.');
       return;
     }
-    router.push('/dashboard');
+    // pequena animação de "virada" antes de ir pro dashboard
+    setSaindo(true);
+    setTimeout(() => router.push('/dashboard'), 520);
   }
 
   return (
-    <div className="app">
-      <div className="login-wrap">
-        <h1>AUTOMAÇÃO CONTÁBIL</h1>
-        <div className="sub">acesso restrito</div>
-        {error && <div className="login-error">{error}</div>}
-        <form onSubmit={handleLogin}>
-          <label>Usuário</label>
-          <input type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="seu nome de usuário" required autoFocus />
-          <label>Senha</label>
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
-          <button className="btn teal" type="submit" disabled={loading} style={{ width: '100%' }}>
-            {loading ? 'Entrando…' : 'Entrar'}
-          </button>
-        </form>
+    <div className="auth-bg">
+      <div className={'auth-card' + (saindo ? ' auth-leaving' : '')}>
+        {/* painel esquerdo — gradiente animado com a marca */}
+        <div className="auth-side">
+          <div className="auth-side-inner">
+            <div className="auth-logo">BARRETO<span>·</span>CONSULTORIA</div>
+            <h2>Bom te ver<br />de novo.</h2>
+            <p>Seus extratos, regras e importações estão exatamente onde você deixou. Entre e continue de onde parou.</p>
+            <div className="auth-side-foot">Acesso seguro · Dados no Supabase</div>
+          </div>
+          <div className="auth-blob b1" />
+          <div className="auth-blob b2" />
+        </div>
+
+        {/* painel direito — formulário */}
+        <div className="auth-form">
+          <h1 className="auth-wordmark">AUTOMAÇÃO CONTÁBIL</h1>
+          <div className="auth-sub">acesso restrito da equipe</div>
+
+          {error && <div className="login-error auth-shake">{error}</div>}
+
+          <form onSubmit={handleLogin}>
+            <label>Usuário</label>
+            <div className="auth-field">
+              <User size={15} />
+              <input type="text" value={identifier} onChange={e => setIdentifier(e.target.value)}
+                placeholder="seu nome de usuário" required autoFocus autoComplete="username" />
+            </div>
+
+            <label>Senha</label>
+            <div className="auth-field">
+              <Lock size={15} />
+              <input type={showPass ? 'text' : 'password'} value={password}
+                onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
+              <button type="button" className="auth-eye" title={showPass ? 'Esconder senha' : 'Mostrar senha'}
+                onClick={() => setShowPass(v => !v)} tabIndex={-1}>
+                {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+
+            <button className="auth-submit" type="submit" disabled={loading}>
+              {loading ? (<><span className="spinner" /> Entrando…</>) : (<>Entrar <ArrowRight size={15} /></>)}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
