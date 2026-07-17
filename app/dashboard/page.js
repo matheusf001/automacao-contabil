@@ -3,12 +3,12 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
-const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico'];
+const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios'];
 const TAB_META = {
   empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
   extrato:    { num: '02', label: 'Extrato',         Icon: FileText },
@@ -17,6 +17,7 @@ const TAB_META = {
   contas:     { num: '05', label: 'Plano de Contas', Icon: BookOpen },
   importacao: { num: '06', label: 'Importação',      Icon: Upload },
   historico:  { num: '07', label: 'Histórico',       Icon: History },
+  usuarios:   { num: '08', label: 'Usuários',        Icon: Users },
 };
 
 function fingerprintOf(data, valor, historico) {
@@ -96,6 +97,108 @@ export default function Dashboard() {
   const [relBuscaResultados, setRelBuscaResultados] = useState(null);
   const relFileInputRef = useRef(null);
   const indicesRelatorioRef = useRef({ D: null, C: null });   // índices data|valor pro cruzamento com o extrato
+
+  // ---------- USUÁRIOS (gerenciamento, admin) ----------
+  const USR_FORM_VAZIO = { username: '', email: '', password: '', role: 'operador', acesso_todas: true, empresas: [] };
+  const [usuarios, setUsuarios] = useState([]);
+  const [usrCarregando, setUsrCarregando] = useState(false);
+  const [usrSalvando, setUsrSalvando] = useState(false);
+  const [usrEditandoId, setUsrEditandoId] = useState(null);  // null = criando novo
+  const [usrForm, setUsrForm] = useState(USR_FORM_VAZIO);
+
+  // Chamada à API de administração (envia o token do admin logado; a chave
+  // secreta service_role fica só no servidor, nunca no navegador).
+  async function apiUsuarios(method, body) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Sessão expirada — faça login de novo.');
+    const res = await fetch('/api/admin/usuarios', {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || `Erro ${res.status} na chamada.`);
+    return json;
+  }
+
+  async function carregarUsuarios() {
+    setUsrCarregando(true);
+    try {
+      const { usuarios } = await apiUsuarios('GET');
+      setUsuarios(usuarios || []);
+    } catch (err) {
+      notify('Erro ao listar usuários: ' + err.message);
+    } finally {
+      setUsrCarregando(false);
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'usuarios' && isAdmin) carregarUsuarios();
+  }, [tab, isAdmin]);
+
+  async function salvarUsuario() {
+    if (usrSalvando) return;
+    setUsrSalvando(true);
+    try {
+      if (usrEditandoId) {
+        await apiUsuarios('PATCH', {
+          user_id: usrEditandoId,
+          role: usrForm.role,
+          acesso_todas: usrForm.acesso_todas,
+          empresas: usrForm.acesso_todas ? [] : usrForm.empresas,
+        });
+        notify('Usuário atualizado.', 'success');
+      } else {
+        await apiUsuarios('POST', {
+          username: usrForm.username, email: usrForm.email, password: usrForm.password,
+          role: usrForm.role, acesso_todas: usrForm.acesso_todas,
+          empresas: usrForm.acesso_todas ? [] : usrForm.empresas,
+        });
+        notify(`Usuário "${usrForm.username}" criado. Ele já pode fazer login.`, 'success');
+      }
+      setUsrForm(USR_FORM_VAZIO);
+      setUsrEditandoId(null);
+      await carregarUsuarios();
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setUsrSalvando(false);
+    }
+  }
+
+  function editarUsuario(u) {
+    setUsrEditandoId(u.user_id);
+    setUsrForm({ username: u.username, email: u.email, password: '', role: u.role, acesso_todas: u.acesso_todas, empresas: u.empresas || [] });
+  }
+
+  async function redefinirSenhaUsuario(u) {
+    const nova = prompt(`Nova senha para "${u.username || u.email}" (mínimo 6 caracteres):`);
+    if (!nova) return;
+    try {
+      await apiUsuarios('PATCH', { user_id: u.user_id, password: nova });
+      notify('Senha redefinida — avise o usuário.', 'success');
+    } catch (err) { notify(err.message); }
+  }
+
+  async function alternarAtivoUsuario(u) {
+    const acao = u.ativo ? 'desativar' : 'reativar';
+    if (!confirm(`Deseja ${acao} o usuário "${u.username || u.email}"?${u.ativo ? ' Ele perde o acesso na hora.' : ''}`)) return;
+    try {
+      await apiUsuarios('PATCH', { user_id: u.user_id, ativo: !u.ativo });
+      notify(u.ativo ? 'Usuário desativado.' : 'Usuário reativado.', 'success');
+      await carregarUsuarios();
+    } catch (err) { notify(err.message); }
+  }
+
+  async function excluirUsuario(u) {
+    if (!confirm(`EXCLUIR de vez o usuário "${u.username || u.email}"? Prefira desativar, que é reversível.`)) return;
+    try {
+      await apiUsuarios('DELETE', { user_id: u.user_id });
+      notify('Usuário excluído.', 'success');
+      await carregarUsuarios();
+    } catch (err) { notify(err.message); }
+  }
 
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
@@ -885,7 +988,7 @@ export default function Dashboard() {
 
       <nav className="tabs">
         <div className="tabs-inner">
-          {TABS.map(t => {
+          {TABS.filter(t => t !== 'usuarios' || isAdmin).map(t => {
             const { num, label, Icon } = TAB_META[t];
             return (
               <button key={t} className={'tab-btn' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}>
@@ -1558,6 +1661,112 @@ export default function Dashboard() {
       )}
 
       </div>
+
+      {tab === 'usuarios' && isAdmin && (
+        <section className="panel">
+          <div className="empresas-layout">
+          <div>
+            <h2>Gerenciamento de Usuários</h2>
+            <p className="hint">Crie logins para a equipe, defina o papel de cada um e limite o acesso por empresa. Usuário desativado perde o acesso na hora.</p>
+            {usrCarregando ? (
+              <div className="center-loading">carregando usuários…</div>
+            ) : (
+              <div className="table-wrap"><table>
+                <thead><tr><th>USUÁRIO</th><th>E-MAIL</th><th>PAPEL</th><th>ACESSO</th><th>ÚLTIMO LOGIN</th><th>STATUS</th><th style={{ width: 130 }}>AÇÕES</th></tr></thead>
+                <tbody>
+                  {usuarios.map(u => (
+                    <tr key={u.user_id} style={u.ativo ? {} : { opacity: 0.55 }}>
+                      <td><strong>{u.username || '—'}</strong>{u.sou_eu && <span className="pill" style={{ marginLeft: 6 }}>você</span>}</td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{u.email || '—'}</td>
+                      <td>{u.role === 'admin' ? <span className="badge ia">admin</span> : <span className="badge ok">operador</span>}</td>
+                      <td style={{ fontSize: 12 }}>
+                        {u.role === 'admin' || u.acesso_todas
+                          ? 'todas as empresas'
+                          : `${u.empresas.length} empresa(s)`}
+                      </td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{u.ultimo_login ? fmtData(u.ultimo_login) : 'nunca entrou'}</td>
+                      <td>{u.ativo ? <span className="badge ok">ativo</span> : <span className="badge warn">desativado</span>}</td>
+                      <td>
+                        <button className="icon-btn" title="Editar papel e acesso" onClick={() => editarUsuario(u)}><Pencil size={14} /></button>
+                        <button className="icon-btn" title="Redefinir senha" onClick={() => redefinirSenhaUsuario(u)}><KeyRound size={14} /></button>
+                        {!u.sou_eu && (
+                          <button className="icon-btn" title={u.ativo ? 'Desativar (reversível)' : 'Reativar'} onClick={() => alternarAtivoUsuario(u)}>
+                            {u.ativo ? <UserX size={14} /> : <UserCheck size={14} />}
+                          </button>
+                        )}
+                        {!u.sou_eu && <button className="icon-btn icon-btn-danger" title="Excluir de vez" onClick={() => excluirUsuario(u)}><Trash2 size={14} /></button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            )}
+          </div>
+
+          <div className="card destaque" style={{ marginTop: 0 }}>
+            <h3 style={{ fontSize: 15.5 }}>{usrEditandoId ? 'Editar usuário' : 'Novo usuário'}</h3>
+            {!usrEditandoId && <p className="hint" style={{ marginBottom: 0 }}>O usuário entra com o nome de usuário e a senha que você definir aqui. E-mail é opcional (serve só de referência).</p>}
+
+            <div className="field-label">Nome de usuário</div>
+            <input type="text" style={{ width: '100%' }} placeholder="ex: joao.silva" value={usrForm.username}
+              disabled={!!usrEditandoId}
+              onChange={e => setUsrForm(f => ({ ...f, username: e.target.value }))} />
+
+            {!usrEditandoId && (
+              <>
+                <div className="field-label">E-mail (opcional)</div>
+                <input type="email" style={{ width: '100%' }} placeholder="ex: joao@escritorio.com.br" value={usrForm.email}
+                  onChange={e => setUsrForm(f => ({ ...f, email: e.target.value }))} />
+                <div className="field-label">Senha inicial</div>
+                <input type="text" style={{ width: '100%' }} placeholder="mínimo 6 caracteres" value={usrForm.password}
+                  onChange={e => setUsrForm(f => ({ ...f, password: e.target.value }))} />
+              </>
+            )}
+
+            <div className="field-label">Papel</div>
+            <select style={{ width: '100%' }} value={usrForm.role} onChange={e => setUsrForm(f => ({ ...f, role: e.target.value }))}>
+              <option value="operador">Operador — processa extratos, cria regras</option>
+              <option value="admin">Administrador — acesso total, gerencia tudo</option>
+            </select>
+
+            {usrForm.role !== 'admin' && (
+              <>
+                <div className="field-label">Acesso às empresas</div>
+                <div className="row" style={{ marginTop: 4 }}>
+                  <label style={{ fontSize: 12.5 }}><input type="radio" checked={usrForm.acesso_todas} onChange={() => setUsrForm(f => ({ ...f, acesso_todas: true }))} /> Todas as empresas</label>
+                  <label style={{ fontSize: 12.5 }}><input type="radio" checked={!usrForm.acesso_todas} onChange={() => setUsrForm(f => ({ ...f, acesso_todas: false }))} /> Somente as escolhidas:</label>
+                </div>
+                {!usrForm.acesso_todas && (
+                  <div style={{ maxHeight: 180, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px', marginTop: 8, background: '#fff' }}>
+                    {empresas.map(e => (
+                      <label key={e.id} style={{ display: 'block', fontSize: 12.5, padding: '3px 0', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={usrForm.empresas.includes(e.id)}
+                          onChange={ev => setUsrForm(f => ({
+                            ...f,
+                            empresas: ev.target.checked ? [...f.empresas, e.id] : f.empresas.filter(x => x !== e.id),
+                          }))} /> {e.nome}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="row">
+              <button className="btn teal full" onClick={salvarUsuario}
+                disabled={usrSalvando || (!usrEditandoId && (!usrForm.username || !usrForm.password))}>
+                {usrSalvando ? (<><span className="spinner" /> Salvando…</>) : (usrEditandoId ? 'Salvar alterações' : 'Criar usuário')}
+              </button>
+            </div>
+            {usrEditandoId && (
+              <div className="row" style={{ marginTop: 8 }}>
+                <button className="btn secondary full" onClick={() => { setUsrEditandoId(null); setUsrForm(USR_FORM_VAZIO); }}>Cancelar edição</button>
+              </div>
+            )}
+          </div>
+          </div>
+        </section>
+      )}
 
       <footer className="statusbar">
         <div><span className="dot" />Conectado · dados salvos no Supabase, acessíveis por qualquer login autorizado</div>
