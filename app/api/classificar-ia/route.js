@@ -44,6 +44,11 @@ REGRAS OBRIGATÓRIAS:
 2. Cada empresa tem seu próprio padrão de contas — as regras e os exemplos abaixo mostram como ESTA empresa costuma classificar. Siga esse padrão sempre que possível.
 3. SAÍDA (pagamento) normalmente vai para conta de despesa/custo/fornecedor. ENTRADA (recebimento) normalmente vai para conta de receita/cliente.
 3b. Quando um lançamento tiver o campo "RELATÓRIO FINANCEIRO DA EMPRESA", essa é a informação MAIS CONFIÁVEL sobre do que se trata (veio do sistema financeiro do cliente, casado por data e valor) — dê prioridade a ela sobre o texto do banco. Ex: se o relatório diz "COMISSAO DE VENDAS", classifique como comissão mesmo que o histórico do banco diga só "PIX ENVIADO".
+3c. CASOS AMBÍGUOS — trate com atenção especial (na dúvida, reduza a confiança e explique a dúvida no motivo):
+   - "PAGAMENTO DARF"/"DARF" é um documento genérico da Receita Federal: pode ser INSS, PIS, COFINS, IRRF, IRPJ/CSLL (trimestral) ou parcelamento. NÃO escolha uma conta de tributo fixa por palavra-chave; use o valor, o dia do mês (INSS costuma vencer dia 20; PIS/COFINS dia 25; IRPJ/CSLL no fim do mês), o RELATÓRIO e os exemplos confirmados. Sem evidência, confiança baixa (<60).
+   - Pagamento a SÓCIO pode ser pró-labore (conta "pró-labore a pagar" no passivo / despesa de pró-labore) OU retirada/empréstimo (conta de ativo tipo "C/C sócio" ou com o nome do sócio). Valor redondo e fora da data usual de pró-labore sugere retirada; valores recorrentes na mesma época do mês sugerem pró-labore.
+   - Pagamento a FUNCIONÁRIO pode ser salário ("salários a pagar", geralmente até o 5º dia útil) OU adiantamento (conta de adiantamento de salário, geralmente por volta do dia 15). Use o dia da data do lançamento como pista.
+   - Transferência entre contas da própria empresa ou para APLICAÇÃO financeira: a contrapartida é OUTRA conta de ATIVO (aplicação/banco), nunca despesa ou receita. Resgate de aplicação idem, no sentido inverso.
 4. Se não tiver confiança razoável em um lançamento, simplesmente NÃO o inclua na resposta.
 5. Responda APENAS com um array JSON, sem nenhum texto antes ou depois, no formato:
 [{"id": 0, "codigo": 123, "confianca": 85, "motivo": "frase curta explicando"}]

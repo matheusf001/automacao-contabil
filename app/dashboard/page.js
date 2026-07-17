@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
@@ -368,13 +368,19 @@ export default function Dashboard() {
     const m = String(value).trim().match(/^(\d+)/);
     return m ? parseInt(m[1]) : 0;
   }
+  // Índice código -> conta em O(1): antes cada célula da tabela varria o plano
+  // inteiro (find), o que pesava em extratos grandes com planos de 500+ contas.
+  const contasPorCodigo = useMemo(() => {
+    const m = new Map();
+    for (const c of planoContas) m.set(String(c.codigo), c);
+    return m;
+  }, [planoContas]);
+
   function findContaDesc(codigo) {
-    const c = planoContas.find(c => String(c.codigo) === String(codigo));
-    return c ? c.descricao : '';
+    return contasPorCodigo.get(String(codigo))?.descricao || '';
   }
   function isContaSintetica(codigo) {
-    const c = planoContas.find(c => String(c.codigo) === String(codigo));
-    return c?.tipo === 'S';
+    return contasPorCodigo.get(String(codigo))?.tipo === 'S';
   }
   const regrasInvalidas = regras.filter(r => r.codigo && !findContaDesc(r.codigo));
   const regrasComSintetica = regras.filter(r => r.codigo && isContaSintetica(r.codigo));
@@ -768,6 +774,40 @@ export default function Dashboard() {
     };
   }
 
+  // Troca manual da conta de um lançamento: clica na célula DEV/CRED, abre a
+  // busca de contas (F4) e a escolha vale só para aquela linha — sem criar regra.
+  // Serve pros casos ambíguos: sócio (retirada C/C sócio × pró-labore a pagar),
+  // funcionário (salário a pagar × adiantamento), DARF (INSS × PIS × COFINS ×
+  // IRPJ/CSLL × parcelamento), transferência pra aplicação etc.
+  function editarContaDaLinha(idx, campo) {
+    setPickerOnSelect(() => (conta) => {
+      try {
+        if (!conta || conta.codigo === undefined) return;
+        if (isContaSintetica(conta.codigo)) {
+          notify('Conta Sintética (totalizadora) não pode receber lançamento — escolha uma Analítica.');
+          return;
+        }
+        setProcessedRows(prev => prev.map((r, i) => {
+          if (i !== idx || r.status === 'duplicado') return r;
+          const novo = { ...r };
+          if (campo === 'dev') novo.contaDevedora = conta.codigo;
+          else novo.contaCredora = conta.codigo;
+          // se o outro lado ainda está vazio (linha "sem match"), completa com a conta do banco
+          if (!novo.contaDevedora) novo.contaDevedora = contaBancaria;
+          if (!novo.contaCredora) novo.contaCredora = contaBancaria;
+          novo.status = 'automatico';
+          novo.origem = 'manual';
+          return novo;
+        }));
+      } catch (err) {
+        console.error(err);
+        notify('Erro ao aplicar a conta: ' + err.message);
+      } finally {
+        setPickerOnSelect(null);
+      }
+    });
+  }
+
   function aceitarSugestaoIA(idx) {
     setProcessedRows(prev => prev.map((r, i) =>
       (i === idx && r.status === 'sem match' && r.sugestaoIA) ? aplicarContaNaLinha(r, r.sugestaoIA.codigo) : r
@@ -789,7 +829,7 @@ export default function Dashboard() {
       if (r.status === 'duplicado') return;
       if (onlyMatched && r.status !== 'automatico') return;
       const historicoFull = r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico;
-      csv += `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.status}\n`;
+      csv += `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.origem === 'manual' ? 'manual' : r.status}\n`;
     });
     downloadFile(csv, (onlyMatched ? 'importacao_classificados_' : 'importacao_') + currentEmpresaId + '.csv');
   }
@@ -1106,6 +1146,11 @@ export default function Dashboard() {
                   <span className="stat ok">✔ importação confirmada e salva no histórico</span>
                 )}
               </div>
+              <p className="hint" style={{ margin: '10px 0 6px' }}>
+                💡 <strong>Clique no número da conta (colunas DEV. / CRED.)</strong> de qualquer linha para trocar a conta manualmente —
+                útil nos casos ambíguos: DARF (INSS × PIS × COFINS × IRPJ/CSLL), sócio (retirada × pró-labore), funcionário (salário × adiantamento), aplicação etc.
+                A escolha vale só para aquela linha e aparece como <span className="badge ok">✎ manual</span>.
+              </p>
               <div className="table-wrap"><table>
                 <thead><tr><th>DATA</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>DETALHAMENTO</th><th>C/D</th><th className="num">DEV.</th><th className="num">CRED.</th><th>STATUS</th></tr></thead>
                 <tbody>
@@ -1128,12 +1173,29 @@ export default function Dashboard() {
                       </td>
                       <td>{renderClickableText(r.detalhamento)}</td>
                       <td className="mono">{r.cd}</td>
-                      <td className="num">{r.contaDevedora}</td><td className="num">{r.contaCredora}</td>
+                      <td className="num">
+                        {r.status !== 'duplicado' ? (
+                          <button className="conta-cell" title={(r.contaDevedora ? `${r.contaDevedora} — ${findContaDesc(r.contaDevedora)}. ` : '') + 'Clique para escolher outra conta devedora'}
+                            onClick={() => editarContaDaLinha(i, 'dev')}>
+                            {r.contaDevedora || '—'}<Pencil size={10} className="conta-cell-ico" />
+                          </button>
+                        ) : (r.contaDevedora || '')}
+                      </td>
+                      <td className="num">
+                        {r.status !== 'duplicado' ? (
+                          <button className="conta-cell" title={(r.contaCredora ? `${r.contaCredora} — ${findContaDesc(r.contaCredora)}. ` : '') + 'Clique para escolher outra conta credora'}
+                            onClick={() => editarContaDaLinha(i, 'cred')}>
+                            {r.contaCredora || '—'}<Pencil size={10} className="conta-cell-ico" />
+                          </button>
+                        ) : (r.contaCredora || '')}
+                      </td>
                       <td>
                         {r.status === 'automatico' && (
-                          r.origem === 'ia'
-                            ? <span className="badge ia" title={r.sugestaoIA?.motivo || ''}>✦ IA (aceita por você)</span>
-                            : <span className="badge ok">✔ automatico</span>
+                          r.origem === 'manual'
+                            ? <span className="badge ok" title="Conta escolhida manualmente por você nesta linha">✎ manual</span>
+                            : r.origem === 'ia'
+                              ? <span className="badge ia" title={r.sugestaoIA?.motivo || ''}>✦ IA (aceita por você)</span>
+                              : <span className="badge ok">✔ automatico</span>
                         )}
                         {r.status === 'sem match' && r.sugestaoIA && (
                           <div>
@@ -1207,19 +1269,19 @@ export default function Dashboard() {
                     <div className="field-inline"><label>Coluna da DATA (do pagamento/recebimento)</label>
                       <select value={relMapa.colData} onChange={e => setRelMapa(m => ({ ...m, colData: parseInt(e.target.value) }))}>
                         <option value={-1}>— escolher —</option>
-                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice + 1} (ex: {c.exemplo || 'vazia'})</option>)}
                       </select>
                     </div>
                     <div className="field-inline"><label>Coluna do VALOR</label>
                       <select value={relMapa.colValor} onChange={e => setRelMapa(m => ({ ...m, colValor: parseInt(e.target.value) }))}>
                         <option value={-1}>— escolher —</option>
-                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice + 1} (ex: {c.exemplo || 'vazia'})</option>)}
                       </select>
                     </div>
                     <div className="field-inline"><label>Coluna de CATEGORIA (opcional)</label>
                       <select value={relMapa.colCategoria} onChange={e => setRelMapa(m => ({ ...m, colCategoria: parseInt(e.target.value) }))}>
                         <option value={-1}>— nenhuma —</option>
-                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice} (ex: {c.exemplo || 'vazia'})</option>)}
+                        {relColunas.map(c => <option key={c.indice} value={c.indice}>Coluna {c.indice + 1} (ex: {c.exemplo || 'vazia'})</option>)}
                       </select>
                     </div>
                   </div>
@@ -1235,7 +1297,7 @@ export default function Dashboard() {
                                 ? [...m.colsDescricao, c.indice].sort((a, b) => a - b)
                                 : m.colsDescricao.filter(x => x !== c.indice),
                             }))} />
-                          Col {c.indice}: <span style={{ color: 'var(--ink-soft)' }}>{(c.exemplo || 'vazia').slice(0, 22)}</span>
+                          Col {c.indice + 1}: <span style={{ color: 'var(--ink-soft)' }}>{(c.exemplo || 'vazia').slice(0, 22)}</span>
                         </label>
                       ))}
                     </div>
