@@ -25,9 +25,21 @@ async function exigirAdmin(request, sb) {
   const { data, error } = await sb.auth.getUser(token);
   if (error || !data?.user) return null;
   const { data: perfil } = await sb.from('perfis')
-    .select('role, ativo').eq('user_id', data.user.id).maybeSingle();
-  if (!perfil || perfil.role !== 'admin' || perfil.ativo === false) return null;
-  return data.user;
+    .select('role, ativo, super, escritorio_id').eq('user_id', data.user.id).maybeSingle();
+  if (!perfil || perfil.ativo === false) return null;
+  if (perfil.role !== 'admin' && perfil.super !== true) return null;
+  // devolve o usuário junto do perfil (escritório define o alcance das ações)
+  return { ...data.user, perfil };
+}
+
+// Gerente só mexe em usuários do PRÓPRIO escritório; o super mexe em todos.
+async function alvoPermitido(sb, admin, userId) {
+  if (admin.perfil.super) return true;
+  const { data: alvo } = await sb.from('perfis')
+    .select('escritorio_id, super').eq('user_id', userId).maybeSingle();
+  if (!alvo) return false;
+  if (alvo.super) return false; // ninguém mexe no dono do sistema
+  return alvo.escritorio_id === admin.perfil.escritorio_id;
 }
 
 function erro(msg, status = 400) {
@@ -43,8 +55,10 @@ export async function GET(request) {
   const admin = await exigirAdmin(request, sb);
   if (!admin) return erro('Acesso negado: apenas administradores.', 403);
 
+  let qPerfis = sb.from('perfis').select('user_id, username, role, acesso_todas, ativo, escritorio_id, super');
+  if (!admin.perfil.super) qPerfis = qPerfis.eq('escritorio_id', admin.perfil.escritorio_id);
   const [{ data: perfis, error: e1 }, { data: acessos }, authList] = await Promise.all([
-    sb.from('perfis').select('user_id, username, role, acesso_todas, ativo'),
+    qPerfis,
     sb.from('perfis_empresas').select('user_id, empresa_id'),
     sb.auth.admin.listUsers({ page: 1, perPage: 1000 }),
   ]);
@@ -70,6 +84,8 @@ export async function GET(request) {
       ultimo_login: u?.last_sign_in_at || null,
       criado_em: u?.created_at || null,
       sou_eu: p.user_id === admin.id,
+      escritorio_id: p.escritorio_id || null,
+      super: p.super === true,
     };
   }).sort((a, b) => (a.username || a.email).localeCompare(b.username || b.email));
 
@@ -105,8 +121,12 @@ export async function POST(request) {
   if (e1) return erro('Erro ao criar usuário: ' + e1.message, 500);
   const userId = criado.user.id;
 
+  const escritorioDestino = (admin.perfil.super && body.escritorio_id)
+    ? String(body.escritorio_id)
+    : admin.perfil.escritorio_id;
   const { error: e2 } = await sb.from('perfis').insert({
     user_id: userId, username, role, acesso_todas: acessoTodas, ativo: true,
+    escritorio_id: escritorioDestino, super: false,
   });
   if (e2) { // desfaz pra não sobrar usuário órfão
     await sb.auth.admin.deleteUser(userId).catch(() => {});
@@ -128,6 +148,7 @@ export async function PATCH(request) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.user_id || '');
   if (!userId) return erro('user_id obrigatório.');
+  if (!(await alvoPermitido(sb, admin, userId))) return erro('Este usuário não pertence ao seu escritório.', 403);
   const souEu = userId === admin.id;
 
   // proteções contra se trancar pra fora
@@ -174,6 +195,7 @@ export async function DELETE(request) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.user_id || '');
   if (!userId) return erro('user_id obrigatório.');
+  if (!(await alvoPermitido(sb, admin, userId))) return erro('Este usuário não pertence ao seu escritório.', 403);
   if (userId === admin.id) return erro('Você não pode excluir o seu próprio usuário.');
 
   await sb.from('perfis_empresas').delete().eq('user_id', userId);

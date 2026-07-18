@@ -3,12 +3,12 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 
-const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios'];
+const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
   empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
   extrato:    { num: '02', label: 'Extrato',         Icon: FileText },
@@ -18,6 +18,7 @@ const TAB_META = {
   importacao: { num: '06', label: 'Importação',      Icon: Upload },
   historico:  { num: '07', label: 'Histórico',       Icon: History },
   usuarios:   { num: '08', label: 'Usuários',        Icon: Users },
+  assinantes: { num: '09', label: 'Assinantes',      Icon: Crown },
 };
 
 function fingerprintOf(data, valor, historico) {
@@ -55,7 +56,12 @@ export default function Dashboard() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [userEmail, setUserEmail] = useState('');
   const [role, setRole] = useState('operador');
-  const isAdmin = role === 'admin';
+  const [souSuper, setSouSuper] = useState(false);          // dono do sistema
+  const [meuEscritorioId, setMeuEscritorioId] = useState(null);
+  const [escritorioVisao, setEscritorioVisao] = useState(null); // modo suporte: ver o ambiente de um assinante
+  const [escritorioVisaoNome, setEscritorioVisaoNome] = useState('');
+  const empresasTodasRef = useRef([]);                       // lista completa (super vê todos os escritórios)
+  const isAdmin = role === 'admin' || souSuper;
 
   const [tab, setTab] = useState('empresas');
   const [empresas, setEmpresas] = useState([]);
@@ -200,6 +206,176 @@ export default function Dashboard() {
     } catch (err) { notify(err.message); }
   }
 
+  // ---------- ASSINANTES (só o dono do sistema) ----------
+  const ASS_FORM_VAZIO = { nome: '', limite_empresas: 5, gerente_username: '', gerente_email: '', gerente_password: '' };
+  const [assinantes, setAssinantes] = useState([]);
+  const [assCarregando, setAssCarregando] = useState(false);
+  const [assSalvando, setAssSalvando] = useState(false);
+  const [assForm, setAssForm] = useState(ASS_FORM_VAZIO);
+
+  async function apiAssinantes(method, body) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Sessão expirada — faça login de novo.');
+    const res = await fetch('/api/admin/escritorios', {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || `Erro ${res.status} na chamada.`);
+    return json;
+  }
+
+  async function carregarAssinantes() {
+    setAssCarregando(true);
+    try {
+      const { escritorios } = await apiAssinantes('GET');
+      setAssinantes(escritorios || []);
+    } catch (err) {
+      notify('Erro ao listar assinantes: ' + err.message);
+    } finally {
+      setAssCarregando(false);
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'assinantes' && souSuper) carregarAssinantes();
+  }, [tab, souSuper]);
+
+  async function criarAssinante() {
+    if (assSalvando) return;
+    setAssSalvando(true);
+    try {
+      await apiAssinantes('POST', assForm);
+      notify(`Assinante "${assForm.nome}" criado! Passe o login do gerente pra ele: ${assForm.gerente_username}`, 'success');
+      setAssForm(ASS_FORM_VAZIO);
+      await carregarAssinantes();
+      await loadEmpresas();
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setAssSalvando(false);
+    }
+  }
+
+  async function editarLimiteAssinante(esc) {
+    const novo = prompt(`Limite de empresas do plano de "${esc.nome}" (hoje: ${esc.limite_empresas}, em uso: ${esc.qtde_empresas}):`, esc.limite_empresas);
+    if (!novo) return;
+    try {
+      await apiAssinantes('PATCH', { id: esc.id, limite_empresas: parseInt(novo) });
+      notify('Limite atualizado.', 'success');
+      carregarAssinantes();
+    } catch (err) { notify(err.message); }
+  }
+
+  async function alternarAtivoAssinante(esc) {
+    const acao = esc.ativo ? 'SUSPENDER' : 'reativar';
+    if (!confirm(`${acao} a assinatura de "${esc.nome}"?${esc.ativo ? ' Todos os usuários dele perdem o acesso na hora.' : ''}`)) return;
+    try {
+      await apiAssinantes('PATCH', { id: esc.id, ativo: !esc.ativo });
+      notify(esc.ativo ? 'Assinatura suspensa.' : 'Assinatura reativada.', 'success');
+      carregarAssinantes();
+    } catch (err) { notify(err.message); }
+  }
+
+  function verAmbienteAssinante(esc) {
+    setEscritorioVisao(esc.id);
+    setEscritorioVisaoNome(esc.nome);
+    setTab('empresas');
+    notify(`Modo suporte: você está vendo o ambiente de "${esc.nome}".`, 'info');
+  }
+
+  // ---------- NOVA EMPRESA COM BUSCA DE CNPJ ----------
+  const [mostrarNovaEmpresa, setMostrarNovaEmpresa] = useState(false);
+  const [novaEmpresa, setNovaEmpresa] = useState({ cnpj: '', nome: '' });
+  const [buscandoCNPJ, setBuscandoCNPJ] = useState(false);
+  const [salvandoEmpresa, setSalvandoEmpresa] = useState(false);
+
+  function formatarCNPJ(v) {
+    const d = String(v).replace(/\D/g, '').slice(0, 14);
+    return d.replace(/^(\d{2})(\d)/, '$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3')
+      .replace(/\.(\d{3})(\d)/, '.$1/$2').replace(/(\d{4})(\d)/, '$1-$2');
+  }
+
+  // Consulta pública de CNPJ (BrasilAPI, dados da Receita Federal)
+  async function buscarCNPJ() {
+    const digitos = novaEmpresa.cnpj.replace(/\D/g, '');
+    if (digitos.length !== 14) { notify('Digite o CNPJ completo (14 números).'); return; }
+    setBuscandoCNPJ(true);
+    try {
+      const res = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${digitos}`);
+      if (!res.ok) {
+        notify(res.status === 404 ? 'CNPJ não encontrado na Receita Federal — confira os números.' : 'A consulta de CNPJ está indisponível agora; preencha o nome manualmente.');
+        return;
+      }
+      const d = await res.json();
+      const nome = d.razao_social || d.nome_fantasia || '';
+      setNovaEmpresa(f => ({ ...f, nome }));
+      const situacao = d.descricao_situacao_cadastral || '';
+      notify(`Encontrado: ${nome}${situacao ? ` (situação: ${situacao})` : ''}${d.municipio ? ` — ${d.municipio}/${d.uf}` : ''}`, 'success');
+    } catch (err) {
+      notify('Sem conexão com a consulta de CNPJ — preencha o nome manualmente.');
+    } finally {
+      setBuscandoCNPJ(false);
+    }
+  }
+
+  async function salvarNovaEmpresa() {
+    const nome = novaEmpresa.nome.trim();
+    if (!nome) { notify('Informe o nome da empresa (ou busque pelo CNPJ).'); return; }
+    setSalvandoEmpresa(true);
+    try {
+      const cnpjDigitos = novaEmpresa.cnpj.replace(/\D/g, '');
+      const payload = { nome, cnpj: cnpjDigitos.length === 14 ? formatarCNPJ(cnpjDigitos) : null };
+      // no modo suporte, a empresa nasce no escritório do assinante que está sendo atendido
+      if (souSuper && escritorioVisao) payload.escritorio_id = escritorioVisao;
+      const { data, error } = await supabase.from('empresas').insert(payload).select().single();
+      if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
+      await loadEmpresas();
+      selecionarEmpresa(data.id);
+      setMostrarNovaEmpresa(false);
+      setNovaEmpresa({ cnpj: '', nome: '' });
+      notify(`Empresa "${nome}" criada!`, 'success');
+    } finally {
+      setSalvandoEmpresa(false);
+    }
+  }
+
+  // ---------- OFX (formato padrão de extrato dos bancos) ----------
+  const ofxModeRef = useRef(false);
+
+  function parseOFX(texto) {
+    const blocos = String(texto).split(/<STMTTRN>/i).slice(1);
+    const pega = (bloco, tag) => {
+      const m = bloco.match(new RegExp('<' + tag + '>([^<\\r\\n]*)', 'i'));
+      return m ? m[1].trim() : '';
+    };
+    const linhas = [];
+    for (const b of blocos) {
+      const dt = pega(b, 'DTPOSTED');
+      const md = dt.match(/^(\d{4})(\d{2})(\d{2})/);
+      if (!md) continue;
+      const data = `${md[3]}/${md[2]}/${md[1]}`;
+      const bruto = pega(b, 'TRNAMT').replace(',', '.');
+      const num = parseFloat(bruto);
+      if (!isFinite(num) || num === 0) continue;
+      const memo = pega(b, 'MEMO');
+      const name = pega(b, 'NAME');
+      const historico = (memo || name || pega(b, 'TRNTYPE') || 'LANÇAMENTO').replace(/\t/g, ' ');
+      const detalhe = (memo && name && memo !== name) ? name.replace(/\t/g, ' ') : (pega(b, 'CHECKNUM') || '');
+      const valorBR = num.toFixed(2).replace('.', ',');
+      linhas.push(`${data}\t${valorBR}\t${historico}\t${detalhe}`);
+    }
+    return linhas;
+  }
+
+  // Layout virtual usado quando o arquivo é OFX (posições fixas, sinal define C/D)
+  const LAYOUT_OFX = { nome: 'OFX', separador: 'tab', col_data: 0, col_valor: 1, col_historico: 2, col_detalhamento: 3, cd_mode: 'sinal', col_cd: 0 };
+
+  // ---------- CONCILIAÇÃO DE SALDO ----------
+  const [concSaldoInicial, setConcSaldoInicial] = useState('');
+  const [concSaldoFinal, setConcSaldoFinal] = useState('');
+
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
   }
@@ -251,6 +427,18 @@ export default function Dashboard() {
     try {
       const ext = file.name.split('.').pop().toLowerCase();
       let text;
+      if (ext === 'ofx') {
+        // OFX: formato universal dos bancos — não depende de layout de colunas
+        const bruto = await file.text();
+        const linhas = parseOFX(bruto);
+        if (!linhas.length) { notify('Não encontrei lançamentos neste OFX — confira se o arquivo está completo.'); return; }
+        ofxModeRef.current = true;
+        setExtratoText(linhas.join('\n'));
+        setConfirmado(false);
+        existentesCacheRef.current = null;
+        notify(`OFX "${file.name}" lido: ${linhas.length} lançamentos. As colunas foram detectadas automaticamente — só clicar em Processar.`, 'success');
+        return;
+      }
       if (ext === 'csv' || ext === 'txt') {
         text = await file.text();
       } else {
@@ -260,6 +448,7 @@ export default function Dashboard() {
         const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
         text = rows.filter(r => r.some(c => String(c).trim() !== '')).map(r => r.join('\t')).join('\n');
       }
+      ofxModeRef.current = false;
       setExtratoText(text);
       setConfirmado(false);
       existentesCacheRef.current = null;
@@ -274,8 +463,10 @@ export default function Dashboard() {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) { router.replace('/login'); return; }
       setUserEmail(session.user.email);
-      const { data: perfil } = await supabase.from('perfis').select('role').eq('user_id', session.user.id).maybeSingle();
+      const { data: perfil } = await supabase.from('perfis').select('role, super, escritorio_id').eq('user_id', session.user.id).maybeSingle();
       setRole(perfil?.role || 'operador');
+      setSouSuper(perfil?.super === true);
+      setMeuEscritorioId(perfil?.escritorio_id || null);
       setCheckingAuth(false);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -303,12 +494,28 @@ export default function Dashboard() {
   async function loadEmpresas() {
     const { data, error } = await supabase.from('empresas').select('*').order('nome');
     if (error) { console.error(error); return; }
-    setEmpresas(data || []);
-    if (data && data.length && !currentEmpresaId) {
-      setCurrentEmpresaId(data[0].id);
-      setDestEmpresaImport(data[0].id);
-    }
+    empresasTodasRef.current = data || [];
+    aplicarVisaoEmpresas(data || [], escritorioVisao);
   }
+
+  // Super no modo suporte: enxerga só as empresas do assinante escolhido,
+  // exatamente como o assinante vê. Demais usuários: o RLS do banco já filtra.
+  function aplicarVisaoEmpresas(todas, visaoId) {
+    const filtradas = (souSuper && visaoId)
+      ? todas.filter(e => e.escritorio_id === visaoId)
+      : todas;
+    setEmpresas(filtradas);
+    const atualExiste = filtradas.some(e => e.id === currentEmpresaId);
+    if (filtradas.length && !atualExiste) {
+      setCurrentEmpresaId(filtradas[0].id);
+      setDestEmpresaImport(filtradas[0].id);
+    }
+    if (!filtradas.length) setCurrentEmpresaId(null);
+  }
+
+  useEffect(() => {
+    aplicarVisaoEmpresas(empresasTodasRef.current, escritorioVisao);
+  }, [escritorioVisao]);
 
   async function loadPlanoContas(empresaId) {
     const { data, error } = await supabase.from('plano_contas').select('*').eq('empresa_id', empresaId);
@@ -665,12 +872,13 @@ export default function Dashboard() {
 
   async function processarExtrato(regrasOverride, opts = {}) {
     if (!contaBancaria) { notify('Escolha a conta bancária desta importação na aba EXTRATO antes de processar.'); return; }
-    if (!currentLayout) { notify('Selecione um layout de banco na aba EXTRATO.'); return; }
+    if (!ofxModeRef.current && !currentLayout) { notify('Selecione um layout de banco na aba EXTRATO.'); return; }
     setProcessando(true);
     setConfirmado(false);
     try {
       const regrasAtuais = regrasOverride || regras;
-      const rows = parseExtrato(extratoText, currentLayout);
+      const layoutUsado = ofxModeRef.current ? LAYOUT_OFX : currentLayout;
+      const rows = parseExtrato(extratoText, layoutUsado);
       const classificado = classificar(rows, regrasAtuais, contaBancaria);
       const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
 
@@ -988,7 +1196,7 @@ export default function Dashboard() {
 
       <nav className="tabs">
         <div className="tabs-inner">
-          {TABS.filter(t => t !== 'usuarios' || isAdmin).map(t => {
+          {TABS.filter(t => (t === 'usuarios' ? isAdmin : t === 'assinantes' ? souSuper : true)).map(t => {
             const { num, label, Icon } = TAB_META[t];
             return (
               <button key={t} className={'tab-btn' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}>
@@ -998,6 +1206,15 @@ export default function Dashboard() {
           })}
         </div>
       </nav>
+
+      {souSuper && escritorioVisao && (
+        <div className="suporte-banner">
+          <Eye size={14} style={{ verticalAlign: -2, marginRight: 7 }} />
+          Modo suporte: você está vendo o ambiente do assinante <strong>&nbsp;{escritorioVisaoNome || 'selecionado'}</strong>.
+          <button className="btn secondary" style={{ marginLeft: 12, padding: '4px 10px', fontSize: 11.5 }}
+            onClick={() => { setEscritorioVisao(null); setEscritorioVisaoNome(''); }}>Sair do modo suporte</button>
+        </div>
+      )}
       <div key={tab} className="fade-in">
 
       {tab === 'empresas' && (
@@ -1011,8 +1228,34 @@ export default function Dashboard() {
                 {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
               </p>
             </div>
-            {isAdmin && <button className="btn secondary" onClick={criarEmpresa}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
+            {isAdmin && <button className="btn secondary" onClick={() => setMostrarNovaEmpresa(v => !v)}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
           </div>
+
+          {isAdmin && mostrarNovaEmpresa && (
+            <div className="card destaque" style={{ marginTop: 14 }}>
+              <h3 style={{ fontSize: 15 }}>Cadastrar nova empresa</h3>
+              <p className="hint" style={{ marginBottom: 0 }}>Digite o CNPJ e clique em Buscar: o nome vem preenchido direto da Receita Federal. Sem CNPJ (ex: produtor rural CPF), preencha só o nome.</p>
+              <div className="row">
+                <div className="field-inline"><label>CNPJ</label>
+                  <input type="text" style={{ width: 180 }} placeholder="00.000.000/0000-00" value={novaEmpresa.cnpj}
+                    onChange={e => setNovaEmpresa(f => ({ ...f, cnpj: formatarCNPJ(e.target.value) }))}
+                    onKeyDown={e => { if (e.key === 'Enter') buscarCNPJ(); }} />
+                </div>
+                <button className="btn secondary" onClick={buscarCNPJ} disabled={buscandoCNPJ} style={{ alignSelf: 'flex-end' }}>
+                  {buscandoCNPJ ? (<><span className="spinner" /> Buscando…</>) : (<><Search size={13} style={{ marginRight: 5, verticalAlign: -2 }} />Buscar CNPJ</>)}
+                </button>
+              </div>
+              <div className="field-label">Nome / razão social</div>
+              <input type="text" style={{ width: '100%' }} placeholder="preenchido pela busca, ou digite" value={novaEmpresa.nome}
+                onChange={e => setNovaEmpresa(f => ({ ...f, nome: e.target.value }))} />
+              <div className="row">
+                <button className="btn teal" onClick={salvarNovaEmpresa} disabled={salvandoEmpresa || !novaEmpresa.nome.trim()}>
+                  {salvandoEmpresa ? (<><span className="spinner" /> Criando…</>) : 'Criar empresa'}
+                </button>
+                <button className="btn secondary" onClick={() => { setMostrarNovaEmpresa(false); setNovaEmpresa({ cnpj: '', nome: '' }); }}>Cancelar</button>
+              </div>
+            </div>
+          )}
 
           <div className="search-hero">
             <Search size={18} />
@@ -1110,7 +1353,7 @@ export default function Dashboard() {
 
           <div className="card">
             <h3>Layout do banco</h3>
-            <p className="hint" style={{ marginBottom: 10 }}>Cole uma linha real, confira a prévia e ajuste as colunas (contando a partir de 0) antes de salvar.</p>
+            <p className="hint" style={{ marginBottom: 10 }}>Cole uma linha real, confira a prévia e ajuste as colunas (a 1ª coluna é a nº 1) antes de salvar.</p>
             <div className="row" style={{ marginTop: 0 }}>
               <label style={{ fontSize: 12.5 }}>Layout:</label>
               <select value={currentLayoutId || ''} onChange={e => setCurrentLayoutId(e.target.value)}>
@@ -1133,7 +1376,7 @@ export default function Dashboard() {
             {isAdmin && currentLayout && (
               <div key={currentLayoutId}>
                 <div className="field-group">
-                  <div className="field-group-label">Posição das colunas (conta do zero)</div>
+                  <div className="field-group-label">Posição das colunas (a 1ª coluna é a nº 1)</div>
                   <div className="row" style={{ marginTop: 0 }}>
                     <div className="field-inline"><label>Separador</label>
                       <select defaultValue={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
@@ -1144,16 +1387,16 @@ export default function Dashboard() {
                       </select>
                     </div>
                     <div className="field-inline"><label>Col. Data</label>
-                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_data} onBlur={e => salvarLayout({ col_data: parseInt(e.target.value) || 0 })} />
+                      <input type="number" min="1" style={{ width: 64 }} defaultValue={currentLayout.col_data + 1} onBlur={e => salvarLayout({ col_data: Math.max(0, (parseInt(e.target.value) || 1) - 1) })} />
                     </div>
                     <div className="field-inline"><label>Col. Histórico</label>
-                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_historico} onBlur={e => salvarLayout({ col_historico: parseInt(e.target.value) || 0 })} />
+                      <input type="number" min="1" style={{ width: 64 }} defaultValue={currentLayout.col_historico + 1} onBlur={e => salvarLayout({ col_historico: Math.max(0, (parseInt(e.target.value) || 1) - 1) })} />
                     </div>
                     <div className="field-inline"><label>Col. Valor</label>
-                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_valor} onBlur={e => salvarLayout({ col_valor: parseInt(e.target.value) || 0 })} />
+                      <input type="number" min="1" style={{ width: 64 }} defaultValue={currentLayout.col_valor + 1} onBlur={e => salvarLayout({ col_valor: Math.max(0, (parseInt(e.target.value) || 1) - 1) })} />
                     </div>
-                    <div className="field-inline"><label>Col. Detalhamento (-1 = nenhuma)</label>
-                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_detalhamento} onBlur={e => salvarLayout({ col_detalhamento: parseInt(e.target.value) })} />
+                    <div className="field-inline"><label>Col. Detalhamento (0 = nenhuma)</label>
+                      <input type="number" min="0" style={{ width: 64 }} defaultValue={currentLayout.col_detalhamento >= 0 ? currentLayout.col_detalhamento + 1 : 0} onBlur={e => { const v = parseInt(e.target.value) || 0; salvarLayout({ col_detalhamento: v <= 0 ? -1 : v - 1 }); }} />
                     </div>
                   </div>
                 </div>
@@ -1167,7 +1410,7 @@ export default function Dashboard() {
                       </select>
                     </div>
                     <div className="field-inline"><label>Col. C/D</label>
-                      <input type="number" style={{ width: 64 }} defaultValue={currentLayout.col_cd} onBlur={e => salvarLayout({ col_cd: parseInt(e.target.value) || 0 })} />
+                      <input type="number" min="1" style={{ width: 64 }} defaultValue={currentLayout.col_cd + 1} onBlur={e => salvarLayout({ col_cd: Math.max(0, (parseInt(e.target.value) || 1) - 1) })} />
                     </div>
                   </div>
                 </div>
@@ -1177,17 +1420,17 @@ export default function Dashboard() {
 
           <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco.</p>
           <div className="row" style={{ marginTop: 0 }}>
-            <input type="file" ref={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt"
+            <input type="file" ref={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
               onChange={e => { if (e.target.files?.[0]) handleExtratoFileUpload(e.target.files[0]); }} />
             <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>ou cole manualmente abaixo</span>
           </div>
-          <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); setConfirmado(false); existentesCacheRef.current = null; }}
+          <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); ofxModeRef.current = false; setConfirmado(false); existentesCacheRef.current = null; }}
             placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} />
           <div className="row">
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
-            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); existentesCacheRef.current = null; if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
+            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); ofxModeRef.current = false; existentesCacheRef.current = null; if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
           </div>
 
           {processedRows.length > 0 && (
@@ -1249,6 +1492,44 @@ export default function Dashboard() {
                   <span className="stat ok">✔ importação confirmada e salva no histórico</span>
                 )}
               </div>
+              <div className="card" style={{ marginTop: 14 }}>
+                <h3 style={{ fontSize: 14 }}><Scale size={14} style={{ verticalAlign: -2, marginRight: 6 }} />Conciliação de saldo</h3>
+                <p className="hint" style={{ marginBottom: 6 }}>Informe os saldos do extrato do banco e confira se a movimentação processada fecha: <em>saldo anterior + entradas − saídas = saldo final</em>. Diferença zero = extrato completo e sem sobras.</p>
+                {(() => {
+                  const pv = (t) => { const n = parseFloat(String(t).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '')); return isFinite(n) ? n : null; };
+                  const abs = (t) => Math.abs(pv(t) ?? 0);
+                  const creditos = processedRows.filter(r => r.cd === 'C').reduce((s, r) => s + abs(r.valor), 0);
+                  const debitos = processedRows.filter(r => r.cd === 'D').reduce((s, r) => s + abs(r.valor), 0);
+                  const si = pv(concSaldoInicial);
+                  const sf = pv(concSaldoFinal);
+                  const fmt = (n) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                  const calculado = si !== null ? si + creditos - debitos : null;
+                  const diferenca = (calculado !== null && sf !== null) ? sf - calculado : null;
+                  return (
+                    <>
+                      <div className="row" style={{ marginTop: 4 }}>
+                        <div className="field-inline"><label>Saldo anterior (banco)</label>
+                          <input type="text" style={{ width: 140 }} placeholder="ex: 24.278,34" value={concSaldoInicial} onChange={e => setConcSaldoInicial(e.target.value)} />
+                        </div>
+                        <div className="field-inline"><label>Saldo final (banco)</label>
+                          <input type="text" style={{ width: 140 }} placeholder="ex: 18.633,32" value={concSaldoFinal} onChange={e => setConcSaldoFinal(e.target.value)} />
+                        </div>
+                      </div>
+                      <div className="stats" style={{ marginTop: 10 }}>
+                        <div className="stat ok">entradas (C): {fmt(creditos)}</div>
+                        <div className="stat" style={{ background: '#FBEEE1', color: '#B5651D', borderColor: '#EED6BC' }}>saídas (D): {fmt(debitos)}</div>
+                        {calculado !== null && <div className="stat">saldo calculado: {fmt(calculado)}</div>}
+                        {diferenca !== null && (
+                          Math.abs(diferenca) < 0.005
+                            ? <div className="stat ok">✔ conciliado — diferença 0,00</div>
+                            : <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>⚠ diferença de {fmt(diferenca)} — {diferenca > 0 ? 'faltam lançamentos no extrato colado (ou saldo digitado errado)' : 'há lançamentos a mais (ou saldo digitado errado)'}</div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
               <p className="hint" style={{ margin: '10px 0 6px' }}>
                 💡 <strong>Clique no número da conta (colunas DEV. / CRED.)</strong> de qualquer linha para trocar a conta manualmente —
                 útil nos casos ambíguos: DARF (INSS × PIS × COFINS × IRPJ/CSLL), sócio (retirada × pró-labore), funcionário (salário × adiantamento), aplicação etc.
@@ -1662,6 +1943,79 @@ export default function Dashboard() {
 
       </div>
 
+      {tab === 'assinantes' && souSuper && (
+        <section className="panel">
+          <div className="empresas-layout">
+          <div>
+            <h2>Assinantes do sistema</h2>
+            <p className="hint">Cada assinante é um escritório com ambiente próprio e isolado: os usuários dele só enxergam as empresas dele. A cobrança é pelo <strong>limite de empresas (CNPJs)</strong>; usuários são ilimitados. Suspender corta o acesso de todos na hora (reversível).</p>
+            {assCarregando ? (
+              <div className="center-loading">carregando assinantes…</div>
+            ) : (
+              <div className="table-wrap"><table>
+                <thead><tr><th>ESCRITÓRIO</th><th>GERENTE(S)</th><th className="num">EMPRESAS</th><th className="num">USUÁRIOS</th><th>STATUS</th><th>DESDE</th><th style={{ width: 120 }}>AÇÕES</th></tr></thead>
+                <tbody>
+                  {assinantes.map(esc => (
+                    <tr key={esc.id} style={esc.ativo ? {} : { opacity: 0.55 }}>
+                      <td><strong>{esc.nome}</strong>{esc.id === meuEscritorioId && <span className="pill" style={{ marginLeft: 6 }}>seu</span>}</td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{esc.gerentes || '—'}</td>
+                      <td className="num" style={esc.qtde_empresas >= esc.limite_empresas ? { color: 'var(--danger)', fontWeight: 700 } : {}}>
+                        {esc.qtde_empresas} / {esc.limite_empresas}
+                      </td>
+                      <td className="num">{esc.qtde_usuarios}</td>
+                      <td>{esc.ativo ? <span className="badge ok">ativa</span> : <span className="badge warn">suspensa</span>}</td>
+                      <td className="mono" style={{ fontSize: 11.5 }}>{fmtData(esc.criado_em)}</td>
+                      <td>
+                        <button className="icon-btn" title="Ver o ambiente deste assinante (modo suporte)" onClick={() => verAmbienteAssinante(esc)}><Eye size={14} /></button>
+                        <button className="icon-btn" title="Alterar limite de empresas do plano" onClick={() => editarLimiteAssinante(esc)}><Pencil size={14} /></button>
+                        {esc.id !== meuEscritorioId && (
+                          <button className="icon-btn" title={esc.ativo ? 'Suspender assinatura' : 'Reativar assinatura'} onClick={() => alternarAtivoAssinante(esc)}>
+                            {esc.ativo ? <UserX size={14} /> : <UserCheck size={14} />}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            )}
+          </div>
+
+          <div className="card destaque" style={{ marginTop: 0 }}>
+            <h3 style={{ fontSize: 15.5 }}>Novo assinante</h3>
+            <p className="hint" style={{ marginBottom: 0 }}>Cria o escritório já com o usuário <strong>gerente</strong>, que administra o próprio ambiente: cadastra as empresas (até o limite do plano) e cria os usuários da equipe dele.</p>
+
+            <div className="field-label">Nome do escritório</div>
+            <input type="text" style={{ width: '100%' }} placeholder="ex: Contabilidade Silva & Souza" value={assForm.nome}
+              onChange={e => setAssForm(f => ({ ...f, nome: e.target.value }))} />
+
+            <div className="field-label">Limite de empresas do plano</div>
+            <input type="number" min="1" style={{ width: 120 }} value={assForm.limite_empresas}
+              onChange={e => setAssForm(f => ({ ...f, limite_empresas: parseInt(e.target.value) || 1 }))} />
+
+            <div className="field-label">Usuário do gerente</div>
+            <input type="text" style={{ width: '100%' }} placeholder="ex: silva.gerente" value={assForm.gerente_username}
+              onChange={e => setAssForm(f => ({ ...f, gerente_username: e.target.value }))} />
+
+            <div className="field-label">E-mail do gerente (opcional)</div>
+            <input type="email" style={{ width: '100%' }} placeholder="ex: contato@silvaesouza.com.br" value={assForm.gerente_email}
+              onChange={e => setAssForm(f => ({ ...f, gerente_email: e.target.value }))} />
+
+            <div className="field-label">Senha inicial do gerente</div>
+            <input type="text" style={{ width: '100%' }} placeholder="mínimo 6 caracteres" value={assForm.gerente_password}
+              onChange={e => setAssForm(f => ({ ...f, gerente_password: e.target.value }))} />
+
+            <div className="row">
+              <button className="btn teal full" onClick={criarAssinante}
+                disabled={assSalvando || !assForm.nome.trim() || !assForm.gerente_username || !assForm.gerente_password}>
+                {assSalvando ? (<><span className="spinner" /> Criando…</>) : 'Criar assinante'}
+              </button>
+            </div>
+          </div>
+          </div>
+        </section>
+      )}
+
       {tab === 'usuarios' && isAdmin && (
         <section className="panel">
           <div className="empresas-layout">
@@ -1763,6 +2117,15 @@ export default function Dashboard() {
                 <button className="btn secondary full" onClick={() => { setUsrEditandoId(null); setUsrForm(USR_FORM_VAZIO); }}>Cancelar edição</button>
               </div>
             )}
+
+            <details style={{ marginTop: 16, fontSize: 12, color: 'var(--ink-soft)' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700, color: 'var(--ink)' }}>Ver a lista completa de permissões de cada papel</summary>
+              <div style={{ marginTop: 8, lineHeight: 1.7 }}>
+                <strong style={{ color: 'var(--ink)' }}>Operador</strong> — pode: processar e confirmar extratos; usar a IA e aceitar sugestões; trocar conta manualmente nas linhas; criar regras novas; enviar e consultar relatórios financeiros; exportar o arquivo de importação; ver plano de contas e histórico. Não pode: criar/editar/excluir empresas; editar ou excluir regras existentes; editar o plano de contas; mexer em layouts de banco; gerenciar usuários. Se marcado com "somente as escolhidas", só enxerga as empresas liberadas — a trava vale no banco de dados, não só na tela.<br /><br />
+                <strong style={{ color: 'var(--ink)' }}>Administrador (gerente do escritório)</strong> — tudo do operador e mais: criar/editar/excluir empresas (até o limite do plano); editar plano de contas, regras e layouts próprios; criar e gerenciar os usuários do próprio escritório (papéis, acesso por empresa, senhas, desativação). Não enxerga nem administra outros escritórios.<br /><br />
+                <strong style={{ color: 'var(--ink)' }}>Dono do sistema (você)</strong> — tudo acima em qualquer escritório, mais a aba Assinantes: criar assinantes, definir limites do plano, suspender/reativar e entrar em modo suporte.
+              </div>
+            </details>
           </div>
           </div>
         </section>
