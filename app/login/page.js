@@ -84,6 +84,7 @@ export default function LoginPage() {
             <button className="auth-submit" type="submit" disabled={loading}>
               {loading ? (<><span className="spinner" /> Entrando…</>) : (<>Entrar <ArrowRight size={15} /></>)}
             </button>
+            <a href="/recuperar-senha" className="auth-esqueci">Esqueci minha senha</a>
           </form>
         </div>
       </div>

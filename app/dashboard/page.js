@@ -3,10 +3,11 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
+import { PLANOS, getPlano, formatarPreco } from '@/lib/planos';
 
 const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
@@ -276,6 +277,32 @@ export default function Dashboard() {
       notify(esc.ativo ? 'Assinatura suspensa.' : 'Assinatura reativada.', 'success');
       carregarAssinantes();
     } catch (err) { notify(err.message); }
+  }
+
+  // Gera o link de assinatura do Mercado Pago pra mandar no WhatsApp do
+  // assinante. Quando ele pagar, o webhook libera/ajusta tudo sozinho.
+  async function gerarLinkCobranca(esc) {
+    const opcoes = PLANOS.map((p, i) => `${i + 1} = ${p.nome} (${formatarPreco(p.preco_mensal)}/mês, até ${p.limite_empresas} empresas)`).join('\n');
+    const escolha = prompt(`Qual plano cobrar de "${esc.nome}"?\n${opcoes}\n\nDigite o número:`, '2');
+    const plano = PLANOS[parseInt(escolha) - 1];
+    if (!plano) return;
+    const email = prompt('E-mail de cobrança do assinante (conta Mercado Pago dele):', esc.email_cobranca || '');
+    if (!email) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/assinatura/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token },
+        body: JSON.stringify({ escritorio_id: esc.id, plano: plano.id, email }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(json.error || 'Erro ao gerar o link.'); return; }
+      try { await navigator.clipboard.writeText(json.checkout_url); notify('Link de pagamento copiado! Cole no WhatsApp do assinante.', 'success'); }
+      catch { prompt('Copie o link de pagamento:', json.checkout_url); }
+      carregarAssinantes();
+    } catch (err) {
+      notify('Erro: ' + err.message);
+    }
   }
 
   function verAmbienteAssinante(esc) {
@@ -1953,7 +1980,7 @@ export default function Dashboard() {
               <div className="center-loading">carregando assinantes…</div>
             ) : (
               <div className="table-wrap"><table>
-                <thead><tr><th>ESCRITÓRIO</th><th>GERENTE(S)</th><th className="num">EMPRESAS</th><th className="num">USUÁRIOS</th><th>STATUS</th><th>DESDE</th><th style={{ width: 120 }}>AÇÕES</th></tr></thead>
+                <thead><tr><th>ESCRITÓRIO</th><th>GERENTE(S)</th><th className="num">EMPRESAS</th><th className="num">USUÁRIOS</th><th>PLANO</th><th>PAGAMENTO</th><th>STATUS</th><th>DESDE</th><th style={{ width: 150 }}>AÇÕES</th></tr></thead>
                 <tbody>
                   {assinantes.map(esc => (
                     <tr key={esc.id} style={esc.ativo ? {} : { opacity: 0.55 }}>
@@ -1963,11 +1990,19 @@ export default function Dashboard() {
                         {esc.qtde_empresas} / {esc.limite_empresas}
                       </td>
                       <td className="num">{esc.qtde_usuarios}</td>
+                      <td style={{ fontSize: 12 }}>{getPlano(esc.plano)?.nome || '—'}</td>
+                      <td>
+                        {esc.status_pagamento === 'em_dia' && <span className="badge ok">em dia</span>}
+                        {esc.status_pagamento === 'aguardando' && <span className="badge warn">aguardando</span>}
+                        {esc.status_pagamento === 'suspenso' && <span className="badge warn" style={{ background: '#F1E3E3', color: '#A33' }}>suspenso</span>}
+                        {(!esc.status_pagamento || esc.status_pagamento === 'manual') && <span className="pill">manual</span>}
+                      </td>
                       <td>{esc.ativo ? <span className="badge ok">ativa</span> : <span className="badge warn">suspensa</span>}</td>
                       <td className="mono" style={{ fontSize: 11.5 }}>{fmtData(esc.criado_em)}</td>
                       <td>
                         <button className="icon-btn" title="Ver o ambiente deste assinante (modo suporte)" onClick={() => verAmbienteAssinante(esc)}><Eye size={14} /></button>
                         <button className="icon-btn" title="Alterar limite de empresas do plano" onClick={() => editarLimiteAssinante(esc)}><Pencil size={14} /></button>
+                        <button className="icon-btn" title="Gerar link de cobrança (Mercado Pago)" onClick={() => gerarLinkCobranca(esc)}><CreditCard size={14} /></button>
                         {esc.id !== meuEscritorioId && (
                           <button className="icon-btn" title={esc.ativo ? 'Suspender assinatura' : 'Reativar assinatura'} onClick={() => alternarAtivoAssinante(esc)}>
                             {esc.ativo ? <UserX size={14} /> : <UserCheck size={14} />}
