@@ -403,6 +403,14 @@ export default function Dashboard() {
   const [concSaldoInicial, setConcSaldoInicial] = useState('');
   const [concSaldoFinal, setConcSaldoFinal] = useState('');
 
+  // ---------- MEMÓRIA DAS ESCOLHAS MANUAIS ----------
+  // Quando o usuário troca uma conta na mão e depois reprocessa (criou uma
+  // regra, clicou em Processar de novo…), a escolha dele NÃO pode sumir.
+  // Guardamos por "impressão digital" do lançamento (data+valor+histórico)
+  // e reaplicamos a cada processamento. Some só ao Limpar, trocar de
+  // arquivo/empresa ou confirmar a importação.
+  const manualOverridesRef = useRef(new Map());
+
   function openPicker(onSelectFn) {
     setPickerOnSelect(() => onSelectFn);
   }
@@ -435,6 +443,7 @@ export default function Dashboard() {
   function selecionarEmpresa(id) {
     setCurrentEmpresaId(id);
     existentesCacheRef.current = null;
+    manualOverridesRef.current.clear(); // memória de contas manuais é por extrato/empresa
     setProcessedRows([]);
     setConfirmado(false);
     registrarRecente(id);
@@ -463,6 +472,7 @@ export default function Dashboard() {
         setExtratoText(linhas.join('\n'));
         setConfirmado(false);
         existentesCacheRef.current = null;
+        manualOverridesRef.current.clear();
         notify(`OFX "${file.name}" lido: ${linhas.length} lançamentos. As colunas foram detectadas automaticamente — só clicar em Processar.`, 'success');
         return;
       }
@@ -479,6 +489,7 @@ export default function Dashboard() {
       setExtratoText(text);
       setConfirmado(false);
       existentesCacheRef.current = null;
+      manualOverridesRef.current.clear();
       notify(`Arquivo "${file.name}" carregado — confira abaixo e clique em Processar.`, 'success');
     } catch (err) {
       notify('Erro ao ler o arquivo: ' + err.message);
@@ -672,7 +683,7 @@ export default function Dashboard() {
     loadRegras(currentEmpresaId);
   }
   async function updateRegra(regra, field, value) {
-    if (field === 'codigo') {
+    if (field === 'codigo' || field === 'codigo_recebimento') {
       const codigoNum = parseInt(value) || 0;
       if (codigoNum && isContaSintetica(codigoNum)) {
         notify('Essa conta é Sintética (de totalização) — escolha uma conta Analítica.');
@@ -680,7 +691,12 @@ export default function Dashboard() {
         return;
       }
     }
-    const patch = { [field]: field === 'codigo' ? (parseInt(value) || 0) : value, updated_by: userEmail, updated_at: new Date().toISOString() };
+    const patch = {
+      [field]: field === 'codigo' ? (parseInt(value) || 0)
+        : field === 'codigo_recebimento' ? (parseInt(value) || null)
+        : value,
+      updated_by: userEmail, updated_at: new Date().toISOString(),
+    };
     const { error } = await supabase.from('regras').update(patch).eq('id', regra.id);
     if (error) { notify('Erro: ' + error.message); return; }
     flash('salvo ✓');
@@ -948,7 +964,15 @@ export default function Dashboard() {
         const sugestao = sugerirConta(r, baseAprendizadoRef.current, contaBancaria);
         return sugestao ? { ...r, sugestao } : r;
       });
-      setProcessedRows(comSugestao);
+
+      // reaplica as contas que o usuário escolheu manualmente antes do reprocessamento
+      const comManuais = comSugestao.map(r => {
+        if (r.status === 'duplicado') return r;
+        const manual = manualOverridesRef.current.get(r.fingerprint);
+        if (!manual) return r;
+        return { ...r, contaDevedora: manual.contaDevedora, contaCredora: manual.contaCredora, status: 'automatico', origem: 'manual' };
+      });
+      setProcessedRows(comManuais);
     } catch (err) {
       console.error(err);
       notify('Deu um erro ao processar o extrato: ' + err.message + '\n\nConfira se as colunas do layout (Data/Histórico/Valor) estão configuradas corretamente.');
@@ -1135,6 +1159,11 @@ export default function Dashboard() {
           if (!novo.contaCredora) novo.contaCredora = contaBancaria;
           novo.status = 'automatico';
           novo.origem = 'manual';
+          if (novo.fingerprint) {
+            manualOverridesRef.current.set(novo.fingerprint, {
+              contaDevedora: novo.contaDevedora, contaCredora: novo.contaCredora,
+            });
+          }
           return novo;
         }));
       } catch (err) {
@@ -1445,7 +1474,7 @@ export default function Dashboard() {
             )}
           </div>
 
-          <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco.</p>
+          <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco (.ofx, Excel, CSV ou TXT). Só tem o extrato em <strong>PDF</strong>? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--teal)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui.</p>
           <div className="row" style={{ marginTop: 0 }}>
             <input type="file" ref={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
               onChange={e => { if (e.target.files?.[0]) handleExtratoFileUpload(e.target.files[0]); }} />
@@ -1457,7 +1486,7 @@ export default function Dashboard() {
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
-            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); ofxModeRef.current = false; existentesCacheRef.current = null; if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
+            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); ofxModeRef.current = false; existentesCacheRef.current = null; manualOverridesRef.current.clear(); if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
           </div>
 
           {processedRows.length > 0 && (
@@ -1573,10 +1602,13 @@ export default function Dashboard() {
                         {r.refRelatorio && (
                           <div className="ref-relatorio" title={r.refRelatorio.tipo === 'exato'
                             ? 'Data e valor batem com um item do relatório financeiro desta empresa'
-                            : `Mesmo valor no relatório, com ${r.refRelatorio.diasDiferenca} dia(s) de diferença na data`}>
+                            : r.refRelatorio.tipo === 'grupo'
+                              ? 'Este débito/crédito único do banco corresponde à SOMA de vários pagamentos do relatório no mesmo dia (ex: folha via conta-salário, lote de duplicatas)'
+                              : `Mesmo valor no relatório, com ${r.refRelatorio.diasDiferenca} dia(s) de diferença na data`}>
                             <FileSpreadsheet size={11} style={{ verticalAlign: -1.5, marginRight: 4 }} />
                             {r.refRelatorio.item.categoria ? <strong>{r.refRelatorio.item.categoria}: </strong> : <strong>relatório: </strong>}
                             {r.refRelatorio.item.descricao.slice(0, 90)}
+                            {r.refRelatorio.tipo === 'grupo' && <em> Σ</em>}
                             {r.refRelatorio.tipo === 'aproximado' && <em> (±{r.refRelatorio.diasDiferenca}d)</em>}
                             {r.refRelatorio.outros > 0 && <em> (+{r.refRelatorio.outros} itens iguais)</em>}
                           </div>
@@ -1810,6 +1842,7 @@ export default function Dashboard() {
         <section className="panel">
           <h2>Regras de classificação — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           <p className="hint">Palavra-chave → código contábil. Quando mais de uma regra combina, prevalece a <strong>última da lista</strong> (use as setas ↑↓ para reordenar).</p>
+          <p className="hint" style={{ marginTop: 4 }}>💡 <strong>Conta p/ entradas (opcional):</strong> a mesma palavra-chave pode lançar em contas diferentes conforme a direção. Ex: "EMPRESA DO GRUPO X" com saídas na conta do <em>ativo</em> (C/C coligada) e entradas na conta do <em>passivo</em>; ou o nome do sócio com saídas em <em>retirada/C-C sócio</em> e, se preferir, entradas em outra conta. Vazio = mesma conta pros dois lados.</p>
           <div className="stats">
             <div className="stat">{regras.length} regras</div>
             {regrasInvalidas.length > 0 && (
@@ -1826,7 +1859,7 @@ export default function Dashboard() {
           )}
           <div className="table-wrap" style={{ marginTop: 14 }}>
             <table>
-              <thead><tr><th style={{ width: 50 }}></th><th style={{ width: '30%' }}>PALAVRA-CHAVE</th><th style={{ width: '12%' }}>CÓDIGO</th><th style={{ width: '24%' }}>DESCRIÇÃO CONTA</th><th>OBSERVAÇÃO</th><th style={{ width: 34 }}></th></tr></thead>
+              <thead><tr><th style={{ width: 50 }}></th><th style={{ width: '24%' }}>PALAVRA-CHAVE</th><th style={{ width: '15%' }}>CONTA (SAÍDAS)</th><th style={{ width: '15%' }}>CONTA P/ ENTRADAS (OPCIONAL)</th><th style={{ width: '22%' }}>DESCRIÇÃO CONTA</th><th>OBSERVAÇÃO</th><th style={{ width: 34 }}></th></tr></thead>
               <tbody>
                 {regras.map((r, i) => (
                   <tr key={r.id} title={r.updated_by ? `editado por ${r.updated_by} em ${fmtData(r.updated_at)}` : ''}>
@@ -1841,6 +1874,11 @@ export default function Dashboard() {
                       <input className="cell-edit" list="contas-datalist" defaultValue={r.codigo ? `${r.codigo} — ${findContaDesc(r.codigo)}` : ''} readOnly={!isAdmin}
                         onBlur={e => isAdmin && updateRegra(r, 'codigo', extractCodigoFromPicked(e.target.value))} />
                       {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo', String(conta.codigo)))}><Search size={13} /></button>}
+                    </td>
+                    <td style={{ display: 'flex', gap: 4, alignItems: 'center' }} title="Se preenchida, entradas (PIX recebido, TED recebida…) usam esta conta; saídas continuam na conta ao lado. Vazio = mesma conta pros dois.">
+                      <input className="cell-edit" list="contas-datalist" placeholder="mesma da saída" defaultValue={r.codigo_recebimento ? `${r.codigo_recebimento} — ${findContaDesc(r.codigo_recebimento)}` : ''} readOnly={!isAdmin}
+                        onBlur={e => isAdmin && updateRegra(r, 'codigo_recebimento', extractCodigoFromPicked(e.target.value))} />
+                      {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo_recebimento', String(conta.codigo)))}><Search size={13} /></button>}
                     </td>
                     <td className="mono" style={{ color: !findContaDesc(r.codigo) ? 'var(--amber)' : (isContaSintetica(r.codigo) ? '#A33' : 'var(--ink-soft)') }}>
                       {!r.codigo ? '' : !findContaDesc(r.codigo) ? 'código não encontrado' : isContaSintetica(r.codigo) ? `⚠ ${findContaDesc(r.codigo)} (SINTÉTICA — evite lançar aqui)` : findContaDesc(r.codigo)}
