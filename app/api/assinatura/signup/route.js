@@ -14,6 +14,23 @@ import { getPlano } from '@/lib/planos';
 export const runtime = 'nodejs';
 const EMAIL_INTERNO = '@usuarios.interno';
 
+// Proteção simples contra abuso: esta rota é pública e roda com a chave
+// de serviço, então limitamos as tentativas de criação por IP.
+// (contador em memória — zera quando o servidor reinicia, o suficiente
+// pra barrar scripts automatizados sem atrapalhar quem assina de verdade)
+const tentativasPorIp = new Map();
+const LIMITE_TENTATIVAS = 5;
+const JANELA_MS = 60 * 60 * 1000; // 1 hora
+
+function estourouLimite(ip) {
+  const agora = Date.now();
+  const recentes = (tentativasPorIp.get(ip) || []).filter(t => agora - t < JANELA_MS);
+  if (recentes.length >= LIMITE_TENTATIVAS) { tentativasPorIp.set(ip, recentes); return true; }
+  recentes.push(agora);
+  tentativasPorIp.set(ip, recentes);
+  return false;
+}
+
 function clienteAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -48,6 +65,11 @@ export async function POST(request) {
   const { data: jaExiste } = await sb.from('perfis').select('user_id').eq('username', gUsername).maybeSingle();
   if (jaExiste) return erro(`O nome de usuário "${gUsername}" já está em uso — escolha outro.`);
 
+  // Só conta pro limite as tentativas que passaram nas validações (ou seja,
+  // que realmente iriam criar cadastro) — errar um campo não gasta tentativa.
+  const ip = (request.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'desconhecido';
+  if (estourouLimite(ip)) return erro('Muitas tentativas seguidas — aguarde uma hora e tente de novo.', 429);
+
   // 1) escritório nasce SUSPENSO, aguardando o pagamento
   const { data: esc, error: e1 } = await sb.from('escritorios').insert({
     nome, limite_empresas: plano.limite_empresas, ativo: false,
@@ -76,24 +98,37 @@ export async function POST(request) {
 
   // 3) assinatura recorrente no Mercado Pago (cartão de crédito, mensal)
   const site = process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin;
-  const res = await fetch('https://api.mercadopago.com/preapproval', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mpToken}` },
-    body: JSON.stringify({
-      reason: `Automação Contábil — Plano ${plano.nome} (${nome})`,
-      external_reference: esc.id,
-      payer_email: gEmail,
-      back_url: `${site}/assinar/obrigado`,
-      auto_recurring: {
-        frequency: 1, frequency_type: 'months',
-        transaction_amount: plano.preco_mensal, currency_id: 'BRL',
-      },
-      status: 'pending',
-    }),
-  });
-  const mp = await res.json().catch(() => ({}));
-  if (!res.ok || !mp.init_point) {
+  let mp = {};
+  let mpOk = false;
+  try {
+    const res = await fetch('https://api.mercadopago.com/preapproval', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mpToken}` },
+      body: JSON.stringify({
+        reason: `Automação Contábil — Plano ${plano.nome} (${nome})`,
+        external_reference: esc.id,
+        payer_email: gEmail,
+        back_url: `${site}/assinar/obrigado`,
+        auto_recurring: {
+          frequency: 1, frequency_type: 'months',
+          transaction_amount: plano.preco_mensal, currency_id: 'BRL',
+        },
+        status: 'pending',
+      }),
+    });
+    mp = await res.json().catch(() => ({}));
+    mpOk = res.ok;
+  } catch (e) {
+    console.error('MP indisponível:', e);
+  }
+  if (!mpOk || !mp.init_point) {
     console.error('MP preapproval falhou:', mp);
+    // Desfaz o que foi criado nos passos 1 e 2 — senão o username e o e-mail
+    // ficam presos num cadastro pela metade e a pessoa não consegue tentar de novo.
+    // (excluir o usuário do Auth apaga o perfil junto, por cascata)
+    await sb.auth.admin.deleteUser(criado.user.id).catch(() => {});
+    await sb.from('perfis').delete().eq('user_id', criado.user.id).catch(() => {});
+    await sb.from('escritorios').delete().eq('id', esc.id).catch(() => {});
     return erro('Não foi possível gerar o link de pagamento agora — tente novamente em instantes.', 502);
   }
   await sb.from('escritorios').update({ mp_preapproval_id: mp.id }).eq('id', esc.id);

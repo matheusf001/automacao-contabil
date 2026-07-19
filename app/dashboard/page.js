@@ -160,6 +160,7 @@ export default function Dashboard() {
   const [extratoText, setExtratoText] = useState('');
   const [processedRows, setProcessedRows] = useState([]);
   const [confirmado, setConfirmado] = useState(false);
+  const [confirmando, setConfirmando] = useState(false); // trava contra duplo clique (evita gravar a importação em dobro)
   const [processando, setProcessando] = useState(false);
   const [importStatus, setImportStatus] = useState('');
   const [destEmpresaImport, setDestEmpresaImport] = useState(null);
@@ -1161,36 +1162,42 @@ export default function Dashboard() {
   }
 
   async function confirmarImportacao() {
+    if (confirmando) return; // já tem um salvamento em andamento — ignora o clique repetido
     if (processedRows.length === 0) return;
     const naoDuplicados = processedRows.filter(r => r.status !== 'duplicado');
     if (naoDuplicados.length === 0) { notify('Todos os lançamentos já foram importados antes — nada novo para salvar.'); return; }
 
-    const { data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert({
-      empresa_id: currentEmpresaId,
-      layout_id: currentLayoutId,
-      conta_codigo: contaBancaria,
-      total_lancamentos: processedRows.length,
-      total_classificados: processedRows.filter(r => r.status === 'automatico').length,
-      total_sem_match: processedRows.filter(r => r.status === 'sem match').length,
-      total_duplicados: processedRows.filter(r => r.status === 'duplicado').length,
-      processado_por: userEmail,
-    }).select().single();
-    if (errExtrato) { notify('Erro ao salvar histórico: ' + errExtrato.message); return; }
+    setConfirmando(true);
+    try {
+      const { data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert({
+        empresa_id: currentEmpresaId,
+        layout_id: currentLayoutId,
+        conta_codigo: contaBancaria,
+        total_lancamentos: processedRows.length,
+        total_classificados: processedRows.filter(r => r.status === 'automatico').length,
+        total_sem_match: processedRows.filter(r => r.status === 'sem match').length,
+        total_duplicados: processedRows.filter(r => r.status === 'duplicado').length,
+        processado_por: userEmail,
+      }).select().single();
+      if (errExtrato) { notify('Erro ao salvar histórico: ' + errExtrato.message); return; }
 
-    const linhas = naoDuplicados.map(r => ({
-      empresa_id: currentEmpresaId, extrato_id: extrato.id, fingerprint: r.fingerprint,
-      data: r.data, valor: r.valor, historico: r.historico, detalhamento: r.detalhamento, cd: r.cd,
-      conta_credora: r.contaCredora || null, conta_devedora: r.contaDevedora || null, status: r.status,
-    }));
-    const chunkSize = 300;
-    for (let i = 0; i < linhas.length; i += chunkSize) {
-      const { error } = await supabase.from('lancamentos_importados').insert(linhas.slice(i, i + chunkSize));
-      if (error) { notify('Erro ao salvar lançamentos: ' + error.message); return; }
+      const linhas = naoDuplicados.map(r => ({
+        empresa_id: currentEmpresaId, extrato_id: extrato.id, fingerprint: r.fingerprint,
+        data: r.data, valor: r.valor, historico: r.historico, detalhamento: r.detalhamento, cd: r.cd,
+        conta_credora: r.contaCredora || null, conta_devedora: r.contaDevedora || null, status: r.status,
+      }));
+      const chunkSize = 300;
+      for (let i = 0; i < linhas.length; i += chunkSize) {
+        const { error } = await supabase.from('lancamentos_importados').insert(linhas.slice(i, i + chunkSize));
+        if (error) { notify('Erro ao salvar lançamentos: ' + error.message); return; }
+      }
+      setConfirmado(true);
+      loadHistorico(currentEmpresaId);
+      loadBaseAprendizado(currentEmpresaId); // atualiza a base de aprendizado com os lançamentos recém-confirmados
+      notify('Importação confirmada e salva no histórico!', 'success');
+    } finally {
+      setConfirmando(false);
     }
-    setConfirmado(true);
-    loadHistorico(currentEmpresaId);
-    loadBaseAprendizado(currentEmpresaId); // atualiza a base de aprendizado com os lançamentos recém-confirmados
-    notify('Importação confirmada e salva no histórico!', 'success');
   }
 
   // ---------- CLASSIFICAÇÃO COM IA (Claude via API — sempre com confirmação humana) ----------
@@ -1784,7 +1791,9 @@ export default function Dashboard() {
                   </button>
                 )}
                 {!confirmado ? (
-                  <button className="btn teal" onClick={confirmarImportacao}>Confirmar importação (salva no histórico)</button>
+                  <button className="btn teal" onClick={() => confirmarImportacao()} disabled={confirmando}>
+                    {confirmando ? (<><span className="spinner" /> Salvando…</>) : 'Confirmar importação (salva no histórico)'}
+                  </button>
                 ) : (
                   <span className="stat ok">✔ importação confirmada e salva no histórico</span>
                 )}
