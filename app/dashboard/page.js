@@ -3,11 +3,22 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 import { PLANOS, getPlano, formatarPreco } from '@/lib/planos';
+
+// Barras cinzas pulsantes exibidas enquanto os dados carregam (melhor que "carregando…")
+function SkeletonTabela({ linhas = 4 }) {
+  return (
+    <div className="skeleton-wrap">
+      {Array.from({ length: linhas }).map((_, i) => (
+        <div key={i} className="skeleton-bar" style={{ width: `${92 - (i % 4) * 9}%` }} />
+      ))}
+    </div>
+  );
+}
 
 const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
@@ -1816,7 +1827,11 @@ export default function Dashboard() {
 
           <h3 style={{ fontSize: 13, margin: '18px 0 6px' }}>Relatórios enviados</h3>
           {relatorios.length === 0 ? (
-            <div className="empty-state">Nenhum relatório enviado ainda para esta empresa.</div>
+            <div className="empty-state">
+              <FolderOpen size={34} strokeWidth={1.5} />
+              Nenhum relatório enviado ainda para esta empresa.<br />
+              <span style={{ fontSize: 12 }}>Envie o primeiro no cartão "Enviar novo relatório" aqui em cima — o cruzamento com o extrato começa a funcionar na hora.</span>
+            </div>
           ) : (
             <div className="table-wrap"><table>
               <thead><tr><th>ENVIADO EM</th><th>ARQUIVO</th><th>TIPO</th><th className="num">ITENS</th><th>PERÍODO</th><th>POR</th><th style={{ width: 34 }}></th></tr></thead>
@@ -1846,7 +1861,7 @@ export default function Dashboard() {
           <div className="stats">
             <div className="stat">{regras.length} regras</div>
             {regrasInvalidas.length > 0 && (
-              <div className="stat warn">⚠ {regrasInvalidas.length} regra(s) com código que não existe no plano de contas</div>
+              <div className="stat warn"><AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 5 }} />{regrasInvalidas.length} regra(s) com código que não existe no plano de contas</div>
             )}
             {regrasComSintetica.length > 0 && (
               <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>⚠ {regrasComSintetica.length} regra(s) apontando pra conta Sintética</div>
@@ -1880,8 +1895,12 @@ export default function Dashboard() {
                         onBlur={e => isAdmin && updateRegra(r, 'codigo_recebimento', extractCodigoFromPicked(e.target.value))} />
                       {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta" onClick={() => openPicker((conta) => updateRegra(r, 'codigo_recebimento', String(conta.codigo)))}><Search size={13} /></button>}
                     </td>
-                    <td className="mono" style={{ color: !findContaDesc(r.codigo) ? 'var(--amber)' : (isContaSintetica(r.codigo) ? '#A33' : 'var(--ink-soft)') }}>
-                      {!r.codigo ? '' : !findContaDesc(r.codigo) ? 'código não encontrado' : isContaSintetica(r.codigo) ? `⚠ ${findContaDesc(r.codigo)} (SINTÉTICA — evite lançar aqui)` : findContaDesc(r.codigo)}
+                    <td className="mono" style={{ color: 'var(--ink-soft)' }}>
+                      {!r.codigo ? '' : !findContaDesc(r.codigo)
+                        ? <span className="badge warn" style={{ background: '#FBE9E7', color: '#A33' }}>código não encontrado</span>
+                        : isContaSintetica(r.codigo)
+                          ? <><span className="badge warn" style={{ background: '#FBE9E7', color: '#A33' }}>SINTÉTICA</span> {findContaDesc(r.codigo)}</>
+                          : findContaDesc(r.codigo)}
                     </td>
                     <td><input className="cell-edit" defaultValue={r.descricao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'descricao', e.target.value)} /></td>
                     <td>{isAdmin && <button className="icon-btn icon-btn-danger" onClick={() => deleteRegra(r)}><Trash2 size={14} /></button>}</td>
@@ -2015,7 +2034,7 @@ export default function Dashboard() {
             <h2>Assinantes do sistema</h2>
             <p className="hint">Cada assinante é um escritório com ambiente próprio e isolado: os usuários dele só enxergam as empresas dele. A cobrança é pelo <strong>limite de empresas (CNPJs)</strong>; usuários são ilimitados. Suspender corta o acesso de todos na hora (reversível).</p>
             {assCarregando ? (
-              <div className="center-loading">carregando assinantes…</div>
+              <SkeletonTabela linhas={5} />
             ) : (
               <div className="table-wrap"><table>
                 <thead><tr><th>ESCRITÓRIO</th><th>GERENTE(S)</th><th className="num">EMPRESAS</th><th className="num">USUÁRIOS</th><th>PLANO</th><th>PAGAMENTO</th><th>STATUS</th><th>DESDE</th><th style={{ width: 150 }}>AÇÕES</th></tr></thead>
@@ -2058,21 +2077,28 @@ export default function Dashboard() {
             <h3 style={{ fontSize: 15.5 }}>Novo assinante</h3>
             <p className="hint" style={{ marginBottom: 0 }}>Cria o escritório já com o usuário <strong>gerente</strong>, que administra o próprio ambiente: cadastra as empresas (até o limite do plano) e cria os usuários da equipe dele.</p>
 
-            <div className="field-label">Nome do escritório</div>
-            <input type="text" style={{ width: '100%' }} placeholder="ex: Contabilidade Silva & Souza" value={assForm.nome}
-              onChange={e => setAssForm(f => ({ ...f, nome: e.target.value }))} />
-
-            <div className="field-label">Limite de empresas do plano</div>
-            <input type="number" min="1" style={{ width: 120 }} value={assForm.limite_empresas}
-              onChange={e => setAssForm(f => ({ ...f, limite_empresas: parseInt(e.target.value) || 1 }))} />
-
-            <div className="field-label">Usuário do gerente</div>
-            <input type="text" style={{ width: '100%' }} placeholder="ex: silva.gerente" value={assForm.gerente_username}
-              onChange={e => setAssForm(f => ({ ...f, gerente_username: e.target.value }))} />
-
-            <div className="field-label">E-mail do gerente (opcional)</div>
-            <input type="email" style={{ width: '100%' }} placeholder="ex: contato@silvaesouza.com.br" value={assForm.gerente_email}
-              onChange={e => setAssForm(f => ({ ...f, gerente_email: e.target.value }))} />
+            <div className="form-grid-2">
+              <div>
+                <div className="field-label">Nome do escritório</div>
+                <input type="text" style={{ width: '100%' }} placeholder="ex: Contabilidade Silva & Souza" value={assForm.nome}
+                  onChange={e => setAssForm(f => ({ ...f, nome: e.target.value }))} />
+              </div>
+              <div>
+                <div className="field-label">Limite de empresas</div>
+                <input type="number" min="1" style={{ width: '100%' }} value={assForm.limite_empresas}
+                  onChange={e => setAssForm(f => ({ ...f, limite_empresas: parseInt(e.target.value) || 1 }))} />
+              </div>
+              <div>
+                <div className="field-label">Usuário do gerente</div>
+                <input type="text" style={{ width: '100%' }} placeholder="ex: silva.gerente" value={assForm.gerente_username}
+                  onChange={e => setAssForm(f => ({ ...f, gerente_username: e.target.value }))} />
+              </div>
+              <div>
+                <div className="field-label">E-mail do gerente (opcional)</div>
+                <input type="email" style={{ width: '100%' }} placeholder="contato@silvaesouza.com.br" value={assForm.gerente_email}
+                  onChange={e => setAssForm(f => ({ ...f, gerente_email: e.target.value }))} />
+              </div>
+            </div>
 
             <div className="field-label">Senha inicial do gerente</div>
             <input type="text" style={{ width: '100%' }} placeholder="mínimo 6 caracteres" value={assForm.gerente_password}
@@ -2096,7 +2122,7 @@ export default function Dashboard() {
             <h2>Gerenciamento de Usuários</h2>
             <p className="hint">Crie logins para a equipe, defina o papel de cada um e limite o acesso por empresa. Usuário desativado perde o acesso na hora.</p>
             {usrCarregando ? (
-              <div className="center-loading">carregando usuários…</div>
+              <SkeletonTabela linhas={5} />
             ) : (
               <div className="table-wrap"><table>
                 <thead><tr><th>USUÁRIO</th><th>E-MAIL</th><th>PAPEL</th><th>ACESSO</th><th>ÚLTIMO LOGIN</th><th>STATUS</th><th style={{ width: 130 }}>AÇÕES</th></tr></thead>
@@ -2140,14 +2166,18 @@ export default function Dashboard() {
               onChange={e => setUsrForm(f => ({ ...f, username: e.target.value }))} />
 
             {!usrEditandoId && (
-              <>
-                <div className="field-label">E-mail (opcional)</div>
-                <input type="email" style={{ width: '100%' }} placeholder="ex: joao@escritorio.com.br" value={usrForm.email}
-                  onChange={e => setUsrForm(f => ({ ...f, email: e.target.value }))} />
-                <div className="field-label">Senha inicial</div>
-                <input type="text" style={{ width: '100%' }} placeholder="mínimo 6 caracteres" value={usrForm.password}
-                  onChange={e => setUsrForm(f => ({ ...f, password: e.target.value }))} />
-              </>
+              <div className="form-grid-2">
+                <div>
+                  <div className="field-label">E-mail (opcional)</div>
+                  <input type="email" style={{ width: '100%' }} placeholder="joao@escritorio.com.br" value={usrForm.email}
+                    onChange={e => setUsrForm(f => ({ ...f, email: e.target.value }))} />
+                </div>
+                <div>
+                  <div className="field-label">Senha inicial</div>
+                  <input type="text" style={{ width: '100%' }} placeholder="mínimo 6 caracteres" value={usrForm.password}
+                    onChange={e => setUsrForm(f => ({ ...f, password: e.target.value }))} />
+                </div>
+              </div>
             )}
 
             <div className="field-label">Papel</div>
