@@ -46,7 +46,7 @@ export default function LoginPage() {
         {/* painel esquerdo — gradiente animado com a marca */}
         <div className="auth-side">
           <div className="auth-side-inner">
-            <div className="auth-logo">BARRETO<span>·</span>CONSULTORIA</div>
+            <div className="auth-logo">AUTOCONTAX</div>
             <h2>Bom te ver<br />de novo.</h2>
             <p>Seus extratos, regras e importações estão exatamente onde você deixou. Entre e continue de onde parou.</p>
             <div className="auth-side-foot">Acesso seguro · Dados no Supabase</div>
