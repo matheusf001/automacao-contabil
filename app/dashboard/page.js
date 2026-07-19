@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle, Banknote } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, downloadFileAnsi, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
@@ -90,17 +90,18 @@ function EmpresaPicker({ empresas, currentEmpresaId, onSelect }) {
   );
 }
 
-const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
+const TABS = ['empresas', 'extrato', 'relatorios', 'folha', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
   empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
   extrato:    { num: '02', label: 'Extrato',         Icon: FileText },
   relatorios: { num: '03', label: 'Relatórios',      Icon: BarChart3 },
-  regras:     { num: '04', label: 'Regras',          Icon: Settings },
-  contas:     { num: '05', label: 'Plano de Contas', Icon: BookOpen },
-  importacao: { num: '06', label: 'Importação',      Icon: Upload },
-  historico:  { num: '07', label: 'Histórico',       Icon: History },
-  usuarios:   { num: '08', label: 'Usuários',        Icon: Users },
-  assinantes: { num: '09', label: 'Assinantes',      Icon: Crown },
+  folha:      { num: '04', label: 'Folha',           Icon: Banknote },
+  regras:     { num: '05', label: 'Regras',          Icon: Settings },
+  contas:     { num: '06', label: 'Plano de Contas', Icon: BookOpen },
+  importacao: { num: '07', label: 'Importação',      Icon: Upload },
+  historico:  { num: '08', label: 'Histórico',       Icon: History },
+  usuarios:   { num: '09', label: 'Usuários',        Icon: Users },
+  assinantes: { num: '10', label: 'Assinantes',      Icon: Crown },
 };
 
 function fingerprintOf(data, valor, historico) {
@@ -171,6 +172,15 @@ export default function Dashboard() {
   const [toasts, setToasts] = useState([]);
   const [pickerOnSelect, setPickerOnSelect] = useState(null);
   const [inputModal, setInputModal] = useState(null); // { titulo, texto, label, valorInicial, confirmarLabel, onConfirm } — substitui window.prompt()
+
+  // folha de pagamento (Fase 1: funcionários + líquidos importados do PDF)
+  const [funcionarios, setFuncionarios] = useState([]);
+  const [folhas, setFolhas] = useState([]);
+  const [folhaPreview, setFolhaPreview] = useState(null); // resultado do PDF lido, aguardando conferência
+  const [folhaLendo, setFolhaLendo] = useState(false);
+  const [folhaSalvando, setFolhaSalvando] = useState(false);
+  const [fileNameFolha, setFileNameFolha] = useState('');
+  const folhaFileRef = useRef(null);
   const [recentes, setRecentes] = useState([]);
   const [verTodas, setVerTodas] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -226,6 +236,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (tab === 'usuarios' && isAdmin) carregarUsuarios();
   }, [tab, isAdmin]);
+
+  useEffect(() => {
+    if (tab === 'folha' && currentEmpresaId) { loadFuncionarios(currentEmpresaId); loadFolhas(currentEmpresaId); }
+  }, [tab, currentEmpresaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function salvarUsuario() {
     if (usrSalvando) return;
@@ -919,6 +933,99 @@ export default function Dashboard() {
     if (error) { notify('Erro: ' + error.message); return; }
     flash('salvo ✓');
     loadLayouts();
+  }
+
+  // ---------- FOLHA DE PAGAMENTO (Fase 1: funcionários + líquidos do PDF) ----------
+  async function loadFuncionarios(empresaId) {
+    const { data, error } = await supabase.from('funcionarios').select('*').eq('empresa_id', empresaId).order('nome');
+    if (error) { console.error(error); return; }
+    setFuncionarios(data || []);
+  }
+  async function loadFolhas(empresaId) {
+    const { data, error } = await supabase.from('folhas').select('*').eq('empresa_id', empresaId).order('criado_em', { ascending: false });
+    if (error) { console.error(error); return; }
+    setFolhas(data || []);
+  }
+  async function lerPdfFolha() {
+    const file = folhaFileRef.current?.files?.[0];
+    if (!file) { notify('Escolha o PDF da folha primeiro.'); return; }
+    setFolhaLendo(true);
+    setFolhaPreview(null);
+    try {
+      const fd = new FormData();
+      fd.append('arquivo', file);
+      const res = await fetch('/api/folha/parse', { method: 'POST', body: fd });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(json.error || 'Erro ao ler o PDF.'); return; }
+      setFolhaPreview(json);
+    } catch {
+      notify('Falha de conexão ao enviar o PDF — tente de novo.');
+    } finally {
+      setFolhaLendo(false);
+    }
+  }
+  async function salvarFolha() {
+    if (!folhaPreview || folhaSalvando) return;
+    if (!folhaPreview.competencia) { notify('Não achei a competência (mês/ano) neste PDF — me avise que eu ajusto o leitor.'); return; }
+    const jaExiste = folhas.find(f => f.competencia === folhaPreview.competencia && f.origem === folhaPreview.origem);
+    if (jaExiste && !confirm(`Já existe uma folha deste tipo na competência ${folhaPreview.competencia}. Salvar de novo cria uma duplicada — prefira excluir a antiga antes. Salvar mesmo assim?`)) return;
+    setFolhaSalvando(true);
+    try {
+      // 1) cria/atualiza os funcionários (chave: empresa + código do empregado)
+      const rowsFunc = folhaPreview.itens.map(i => {
+        const r = { empresa_id: currentEmpresaId, codigo: i.codigo, nome: i.nome };
+        if (i.cpf) r.cpf = i.cpf;
+        if (i.identidade) r.identidade = i.identidade;
+        if (i.cargo) r.cargo = i.cargo;
+        return r;
+      });
+      const { data: funcs, error: e1 } = await supabase.from('funcionarios')
+        .upsert(rowsFunc, { onConflict: 'empresa_id,codigo' }).select();
+      if (e1) { notify('Erro ao salvar funcionários: ' + e1.message); return; }
+      const idPorCodigo = new Map((funcs || []).map(f => [f.codigo, f.id]));
+
+      // 2) cabeçalho da folha
+      const { data: folha, error: e2 } = await supabase.from('folhas').insert({
+        empresa_id: currentEmpresaId,
+        competencia: folhaPreview.competencia,
+        tipo_calculo: folhaPreview.tipoCalculo,
+        origem: folhaPreview.origem,
+        total_liquido: folhaPreview.totalLiquido,
+        qtd_funcionarios: folhaPreview.qtdFuncionarios,
+        arquivo_nome: folhaPreview.arquivoNome,
+        criado_por: userEmail,
+      }).select().single();
+      if (e2) { notify('Erro ao salvar a folha: ' + e2.message); return; }
+
+      // 3) valores de cada funcionário
+      const itens = folhaPreview.itens.map(i => ({
+        folha_id: folha.id, empresa_id: currentEmpresaId,
+        funcionario_id: idPorCodigo.get(i.codigo) || null,
+        codigo_funcionario: i.codigo, nome: i.nome,
+        valor_liquido: i.valorLiquido, data_pagamento: i.dataPagamento || null,
+        proventos: i.proventos ?? null, descontos: i.descontos ?? null,
+        observacao: i.observacao || null,
+      }));
+      const { error: e3 } = await supabase.from('folha_itens').insert(itens);
+      if (e3) {
+        await supabase.from('folhas').delete().eq('id', folha.id); // desfaz o cabeçalho pra não ficar órfão
+        notify('Erro ao salvar os valores: ' + e3.message);
+        return;
+      }
+      setFolhaPreview(null);
+      if (folhaFileRef.current) folhaFileRef.current.value = '';
+      setFileNameFolha('');
+      await Promise.all([loadFuncionarios(currentEmpresaId), loadFolhas(currentEmpresaId)]);
+      notify(`Folha ${folha.competencia} salva — ${itens.length} funcionário(s).`, 'success');
+    } finally {
+      setFolhaSalvando(false);
+    }
+  }
+  async function excluirFolha(f) {
+    if (!confirm(`Excluir a folha ${f.competencia} (${f.qtd_funcionarios} funcionário(s))? Só os valores importados saem do site — o PDF original continua com você.`)) return;
+    const { error } = await supabase.from('folhas').delete().eq('id', f.id);
+    if (error) { notify('Erro ao excluir: ' + error.message); return; }
+    loadFolhas(currentEmpresaId);
   }
 
   // ---------- EXTRATO ----------
@@ -2090,6 +2197,106 @@ export default function Dashboard() {
               </tbody>
             </table></div>
           )}
+        </section>
+      )}
+
+      {tab === 'folha' && (
+        <section className="panel">
+          <h2>Folha de pagamento — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
+          <p className="hint">Envie o PDF gerado pelo sistema de folha: o <strong>Relatório de Líquidos</strong> (nome e valor líquido de cada funcionário) ou o <strong>Extrato Mensal</strong> (completo, com proventos, descontos e férias). O site reconhece os funcionários e guarda os valores — é o que permite identificar no extrato bancário os pagamentos de salário, férias e rescisão, tanto Pix individual quanto pagamento em lote (SISPAG).</p>
+
+          <div className="card">
+            <h3>Enviar folha (PDF)</h3>
+            <div className="row" style={{ marginTop: 8 }}>
+              <FilePicker id="file-folha" inputRef={folhaFileRef} accept=".pdf" fileName={fileNameFolha}
+                onFileChange={f => { setFileNameFolha(f?.name || ''); setFolhaPreview(null); }} />
+              <button className="btn teal" onClick={() => lerPdfFolha()} disabled={folhaLendo || !fileNameFolha}>
+                {folhaLendo ? (<><span className="spinner" /> Lendo PDF…</>) : 'Ler PDF'}
+              </button>
+            </div>
+          </div>
+
+          {folhaPreview && (
+            <div className="card" style={{ marginTop: 14 }}>
+              <h3>Conferência — {folhaPreview.origem === 'liquidos' ? 'Relatório de Líquidos' : 'Extrato Mensal'} · competência {folhaPreview.competencia || '?'}</h3>
+              <p className="hint">
+                {folhaPreview.empresaNome ? <>{folhaPreview.empresaNome} — </> : null}
+                {folhaPreview.qtdFuncionarios} funcionário(s), total líquido <strong>R$ {(folhaPreview.totalLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>.
+                {folhaPreview.tipoCalculo ? <> Cálculo: {folhaPreview.tipoCalculo}.</> : null} Confira e salve.
+              </p>
+              {(folhaPreview.avisos || []).map((a, i) => <div key={i} className="login-error" style={{ marginBottom: 8 }}>{a}</div>)}
+              <div className="table-wrap"><table>
+                <thead><tr>
+                  <th className="num">CÓD.</th><th>NOME</th><th>CPF</th><th>CARGO</th>
+                  <th className="num">PROVENTOS</th><th className="num">DESCONTOS</th><th className="num">LÍQUIDO</th>
+                  <th>DATA PGTO</th><th>OBS.</th>
+                </tr></thead>
+                <tbody>
+                  {folhaPreview.itens.map((i, k) => (
+                    <tr key={k}>
+                      <td className="num mono">{i.codigo}</td>
+                      <td>{i.nome}</td>
+                      <td className="mono">{i.cpf || '—'}</td>
+                      <td>{i.cargo || '—'}</td>
+                      <td className="num">{i.proventos != null ? i.proventos.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}</td>
+                      <td className="num">{i.descontos != null ? i.descontos.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}</td>
+                      <td className="num"><strong>{(i.valorLiquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong></td>
+                      <td className="mono">{i.dataPagamento ? fmtISOparaBR(i.dataPagamento) : '—'}</td>
+                      <td>{i.observacao || ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+              <div className="row">
+                <button className="btn teal" onClick={() => salvarFolha()} disabled={folhaSalvando}>
+                  {folhaSalvando ? (<><span className="spinner" /> Salvando…</>) : 'Salvar folha'}
+                </button>
+                <button className="btn secondary" onClick={() => setFolhaPreview(null)} disabled={folhaSalvando}>Descartar</button>
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 14 }}>
+            <h3>Folhas salvas</h3>
+            {folhas.length === 0 ? <div className="empty-state">Nenhuma folha importada ainda.</div> : (
+              <div className="table-wrap"><table>
+                <thead><tr><th>COMPETÊNCIA</th><th>TIPO</th><th>ORIGEM</th><th className="num">FUNC.</th><th className="num">TOTAL LÍQUIDO</th><th>ENVIADA EM</th><th></th></tr></thead>
+                <tbody>
+                  {folhas.map(f => (
+                    <tr key={f.id}>
+                      <td className="mono">{f.competencia}</td>
+                      <td>{f.tipo_calculo || '—'}</td>
+                      <td>{f.origem === 'liquidos' ? 'Líquidos' : 'Extrato Mensal'}</td>
+                      <td className="num">{f.qtd_funcionarios}</td>
+                      <td className="num">{Number(f.total_liquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                      <td className="mono">{f.criado_em ? new Date(f.criado_em).toLocaleDateString('pt-BR') : '—'}</td>
+                      <td><button className="icon-btn icon-btn-danger" title="Excluir folha" onClick={() => excluirFolha(f)}><Trash2 size={14} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            )}
+          </div>
+
+          <div className="card" style={{ marginTop: 14 }}>
+            <h3>Funcionários reconhecidos ({funcionarios.length})</h3>
+            <p className="hint" style={{ marginBottom: 8 }}>Cadastro alimentado automaticamente pelos PDFs — é ele que permite reconhecer os pagamentos por nome no extrato bancário.</p>
+            {funcionarios.length === 0 ? <div className="empty-state">Envie uma folha acima para cadastrar os funcionários.</div> : (
+              <div className="table-wrap"><table>
+                <thead><tr><th className="num">CÓD.</th><th>NOME</th><th>CPF</th><th>CARGO</th></tr></thead>
+                <tbody>
+                  {funcionarios.map(f => (
+                    <tr key={f.id}>
+                      <td className="num mono">{f.codigo}</td>
+                      <td>{f.nome}</td>
+                      <td className="mono">{f.cpf || f.identidade || '—'}</td>
+                      <td>{f.cargo || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            )}
+          </div>
         </section>
       )}
 
