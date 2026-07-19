@@ -8,6 +8,7 @@ import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFil
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 import InputModal from '@/components/InputModal';
+import { cruzarComFolha, contaParaEvento, descreverRefFolha } from '@/lib/folhaMatcher';
 import { PLANOS, getPlano, formatarPreco } from '@/lib/planos';
 
 // Barras cinzas pulsantes exibidas enquanto os dados carregam (melhor que "carregando…")
@@ -181,6 +182,8 @@ export default function Dashboard() {
   const [folhaSalvando, setFolhaSalvando] = useState(false);
   const [fileNameFolha, setFileNameFolha] = useState('');
   const folhaFileRef = useRef(null);
+  const dadosFolhaRef = useRef({ itens: [], funcionarios: [], totais: [], config: null }); // usado no cruzamento com o extrato
+  const [folhaCfgDraft, setFolhaCfgDraft] = useState({ salario: '', ferias: '', rescisao: '', decimo: '' });
   const [recentes, setRecentes] = useState([]);
   const [verTodas, setVerTodas] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -655,7 +658,7 @@ export default function Dashboard() {
   useEffect(() => { if (!checkingAuth) { loadEmpresas(); loadLayouts(); } }, [checkingAuth]);
 
   useEffect(() => {
-    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); loadBaseAprendizado(currentEmpresaId); loadRelatorios(currentEmpresaId); }
+    if (currentEmpresaId) { loadPlanoContas(currentEmpresaId); loadRegras(currentEmpresaId); loadHistorico(currentEmpresaId); loadBaseAprendizado(currentEmpresaId); loadRelatorios(currentEmpresaId); loadDadosFolha(currentEmpresaId); }
   }, [currentEmpresaId]);
 
   useEffect(() => {
@@ -1015,7 +1018,7 @@ export default function Dashboard() {
       setFolhaPreview(null);
       if (folhaFileRef.current) folhaFileRef.current.value = '';
       setFileNameFolha('');
-      await Promise.all([loadFuncionarios(currentEmpresaId), loadFolhas(currentEmpresaId)]);
+      await Promise.all([loadFuncionarios(currentEmpresaId), loadFolhas(currentEmpresaId), loadDadosFolha(currentEmpresaId)]);
       notify(`Folha ${folha.competencia} salva — ${itens.length} funcionário(s).`, 'success');
     } finally {
       setFolhaSalvando(false);
@@ -1026,6 +1029,63 @@ export default function Dashboard() {
     const { error } = await supabase.from('folhas').delete().eq('id', f.id);
     if (error) { notify('Erro ao excluir: ' + error.message); return; }
     loadFolhas(currentEmpresaId);
+    loadDadosFolha(currentEmpresaId);
+  }
+
+  // Carrega tudo que o cruzamento extrato × folha precisa (fica num ref
+  // pra não re-renderizar a tela — é usado dentro do processarExtrato)
+  async function loadDadosFolha(empresaId) {
+    try {
+      const [ri, rf, rl, rc] = await Promise.all([
+        supabase.from('folha_itens').select('folha_id,codigo_funcionario,nome,valor_liquido,data_pagamento,observacao').eq('empresa_id', empresaId).limit(9000),
+        supabase.from('funcionarios').select('id,codigo,nome,cargo').eq('empresa_id', empresaId).limit(2000),
+        supabase.from('folhas').select('id,competencia,tipo_calculo,origem,total_liquido,qtd_funcionarios').eq('empresa_id', empresaId).limit(500),
+        supabase.from('folha_config').select('*').eq('empresa_id', empresaId).maybeSingle(),
+      ]);
+      const folhaPorId = new Map((rl.data || []).map(f => [f.id, f]));
+      dadosFolhaRef.current = {
+        itens: (ri.data || []).map(i => ({
+          ...i,
+          competencia: folhaPorId.get(i.folha_id)?.competencia,
+          tipo_calculo: folhaPorId.get(i.folha_id)?.tipo_calculo,
+        })),
+        funcionarios: rf.data || [],
+        totais: rl.data || [],
+        config: rc.data || null,
+      };
+      const cfg = rc.data;
+      setFolhaCfgDraft({
+        salario: cfg?.conta_salario ? `${cfg.conta_salario} — ${findContaDesc(cfg.conta_salario)}` : '',
+        ferias: cfg?.conta_ferias ? `${cfg.conta_ferias} — ${findContaDesc(cfg.conta_ferias)}` : '',
+        rescisao: cfg?.conta_rescisao ? `${cfg.conta_rescisao} — ${findContaDesc(cfg.conta_rescisao)}` : '',
+        decimo: cfg?.conta_decimo ? `${cfg.conta_decimo} — ${findContaDesc(cfg.conta_decimo)}` : '',
+      });
+    } catch (e) {
+      console.error(e); // tabelas da folha ainda não criadas no banco — segue sem o cruzamento
+    }
+  }
+
+  async function salvarFolhaConfig() {
+    const campos = [
+      ['conta_salario', 'salario', 'salário'],
+      ['conta_ferias', 'ferias', 'férias'],
+      ['conta_rescisao', 'rescisao', 'rescisão'],
+      ['conta_decimo', 'decimo', '13º'],
+    ];
+    const payload = { empresa_id: currentEmpresaId };
+    for (const [coluna, chave, rotulo] of campos) {
+      const textoCampo = (folhaCfgDraft[chave] || '').trim();
+      const codigo = extractCodigoFromPicked(textoCampo);
+      if (textoCampo && !codigo) { notify(`Conta de ${rotulo} inválida — escolha uma conta da lista.`); return; }
+      if (codigo && isContaSintetica(codigo)) { notify(`A conta de ${rotulo} é Sintética (de totalização) — escolha uma conta Analítica.`); return; }
+      payload[coluna] = codigo ? parseInt(codigo, 10) : null;
+    }
+    if (!payload.conta_salario) { notify('Informe pelo menos a conta de salário — as outras usam ela quando vazias.'); return; }
+    const { error } = await supabase.from('folha_config').upsert(payload, { onConflict: 'empresa_id' });
+    if (error) { notify('Erro ao salvar as contas: ' + error.message); return; }
+    await loadDadosFolha(currentEmpresaId);
+    flash('salvo ✓');
+    notify('Contas da folha salvas — os próximos processamentos de extrato já classificam sozinhos.', 'success');
   }
 
   // ---------- EXTRATO ----------
@@ -1206,7 +1266,24 @@ export default function Dashboard() {
         return ref ? { ...r, refRelatorio: ref } : r;
       });
 
-      const comSugestao = comRelatorio.map(r => {
+      // Cruza com a FOLHA DE PAGAMENTO: pagamento individual (nome + líquido),
+      // lote SISPAG (total da folha) ou só o nome (vira contexto pra IA).
+      // Só classifica sozinho se a conta do de-para estiver configurada e for Analítica.
+      const cfgFolha = dadosFolhaRef.current.config;
+      const comFolha = comRelatorio.map(r => {
+        if (r.status !== 'sem match') return r;
+        const refFolha = cruzarComFolha(r, dadosFolhaRef.current);
+        if (!refFolha) return r;
+        if (refFolha.tipo === 'funcionario' || refFolha.tipo === 'total') {
+          const conta = contaParaEvento(cfgFolha, refFolha.evento);
+          if (conta && !isContaSintetica(conta)) {
+            return { ...r, refFolha, contaDevedora: String(conta), status: 'automatico', origem: 'folha' };
+          }
+        }
+        return { ...r, refFolha };
+      });
+
+      const comSugestao = comFolha.map(r => {
         if (r.status !== 'sem match') return r;
         const sugestao = sugerirConta(r, baseAprendizadoRef.current, contaBancaria);
         return sugestao ? { ...r, sugestao } : r;
@@ -1345,10 +1422,13 @@ export default function Dashboard() {
           lancamentos: semMatch.slice(0, 60).map(r => ({
             id: r.__idx, data: r.data, valor: r.valor, cd: r.cd,
             historico: r.historico, detalhamento: r.detalhamento,
-            // contexto vindo do relatório financeiro da empresa (quando data+valor bateram)
-            contexto: r.refRelatorio
-              ? `${r.refRelatorio.item.categoria ? '[' + r.refRelatorio.item.categoria + '] ' : ''}${r.refRelatorio.item.descricao}`
-              : undefined,
+            // contexto vindo do relatório financeiro e/ou da folha de pagamento da empresa
+            contexto: [
+              r.refRelatorio
+                ? `${r.refRelatorio.item.categoria ? '[' + r.refRelatorio.item.categoria + '] ' : ''}${r.refRelatorio.item.descricao}`
+                : null,
+              r.refFolha ? `FOLHA DE PAGAMENTO: ${descreverRefFolha(r.refFolha)}` : null,
+            ].filter(Boolean).join(' | ') || undefined,
           })),
           contas: contasAnaliticas, regras: regrasResumo, exemplos,
         }),
@@ -1883,6 +1963,12 @@ export default function Dashboard() {
                     {processedRows.filter(r => r.refRelatorio).length} identificados no relatório financeiro
                   </div>
                 )}
+                {processedRows.some(r => r.refFolha) && (
+                  <div className="stat" style={{ background: '#E9F5EC', color: '#15803D', borderColor: '#C9E8D2' }}>
+                    <Banknote size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+                    {processedRows.filter(r => r.refFolha).length} reconhecidos na folha de pagamento
+                  </div>
+                )}
               </div>
               <div className="row" style={{ marginTop: 6 }}>
                 {processedRows.some(r => r.status === 'sem match' && !r.sugestaoIA) && (
@@ -1968,6 +2054,16 @@ export default function Dashboard() {
                             {r.refRelatorio.tipo === 'grupo' && <em> Σ</em>}
                             {r.refRelatorio.tipo === 'aproximado' && <em> (±{r.refRelatorio.diasDiferenca}d)</em>}
                             {r.refRelatorio.outros > 0 && <em> (+{r.refRelatorio.outros} itens iguais)</em>}
+                          </div>
+                        )}
+                        {r.refFolha && (
+                          <div className="ref-relatorio" style={{ color: '#15803D' }} title={
+                            r.refFolha.tipo === 'funcionario' ? 'Nome e valor líquido batem com a folha de pagamento importada — classificado automaticamente se as contas da folha estiverem configuradas'
+                            : r.refFolha.tipo === 'total' ? 'Valor igual ao total líquido da folha (pagamento em lote / SISPAG)'
+                            : r.refFolha.tipo === 'total_suspeito' ? 'Valor igual ao total da folha, mas o histórico não menciona folha/salário — confira antes de aceitar'
+                            : 'Nome de funcionário reconhecido, mas o valor não bate com nenhum líquido da folha (adiantamento? pagamento parcial?)'}>
+                            <Banknote size={11} style={{ verticalAlign: -1.5, marginRight: 4 }} />
+                            <strong>folha: </strong>{descreverRefFolha(r.refFolha).slice(0, 90)}
                           </div>
                         )}
                       </td>
@@ -2214,6 +2310,38 @@ export default function Dashboard() {
                 {folhaLendo ? (<><span className="spinner" /> Lendo PDF…</>) : 'Ler PDF'}
               </button>
             </div>
+          </div>
+
+          <div className="card" style={{ marginTop: 14 }}>
+            <h3>Contas contábeis dos pagamentos</h3>
+            <p className="hint" style={{ marginBottom: 10 }}>Quando o site reconhece no extrato um pagamento da folha (nome + valor líquido, ou o total do lote SISPAG), ele lança nestas contas automaticamente. Sem elas, o pagamento só ganha o selo verde de identificação. Férias, rescisão e 13º em branco usam a conta de salário.</p>
+            {(() => {
+              const CAMPOS_CFG = [['salario', 'Salário'], ['ferias', 'Férias'], ['rescisao', 'Rescisão'], ['decimo', '13º salário']];
+              return (
+                <>
+                  <div className="row" style={{ marginTop: 0, flexWrap: 'wrap' }}>
+                    {CAMPOS_CFG.map(([chave, rotulo]) => (
+                      <div className="field-inline" key={chave}>
+                        <label>{rotulo}</label>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <input type="text" list="contas-datalist" style={{ minWidth: 210 }} placeholder={chave === 'salario' ? 'ex: Salários a Pagar' : 'vazio = usa a de salário'}
+                            value={folhaCfgDraft[chave]} readOnly={!isAdmin}
+                            onChange={e => setFolhaCfgDraft(d => ({ ...d, [chave]: e.target.value }))} />
+                          {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta"
+                            onClick={() => openPicker((conta) => setFolhaCfgDraft(d => ({ ...d, [chave]: `${conta.codigo} — ${conta.descricao}` })))}><Search size={13} /></button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {isAdmin && (
+                    <div className="row" style={{ marginTop: 10 }}>
+                      <button className="btn teal" onClick={() => salvarFolhaConfig()}>Salvar contas</button>
+                      <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           {folhaPreview && (
