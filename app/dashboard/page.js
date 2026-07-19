@@ -20,6 +20,75 @@ function SkeletonTabela({ linhas = 4 }) {
   );
 }
 
+// Botão de "Escolher arquivo" estilizado (o input nativo fica escondido, mas continua acessível por teclado)
+function FilePicker({ id, inputRef, accept, fileName, onFileChange }) {
+  return (
+    <div className="file-picker">
+      <input type="file" id={id} ref={inputRef} accept={accept}
+        onChange={e => onFileChange(e.target.files?.[0] || null)} />
+      <label htmlFor={id} className="file-picker-btn"><Upload size={14} />Escolher arquivo</label>
+      <span className={'file-picker-name' + (fileName ? ' has-file' : '')}>{fileName || 'Nenhum arquivo escolhido'}</span>
+    </div>
+  );
+}
+
+// Dropdown de "empresa selecionada" no cabeçalho, com busca (substitui o <select> nativo)
+function EmpresaPicker({ empresas, currentEmpresaId, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      setSearch('');
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e) { if (e.key === 'Escape') setOpen(false); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  const atual = empresas.find(e => e.id === currentEmpresaId);
+  const f = search.trim().toLowerCase();
+  const filtradas = f ? empresas.filter(e => e.nome.toLowerCase().includes(f)) : empresas;
+
+  return (
+    <div className="empresa-picker">
+      <label>Empresa selecionada</label>
+      <button type="button" className={'empresa-picker-trigger' + (open ? ' open' : '')} onClick={() => setOpen(v => !v)}>
+        <span>{atual?.nome || 'Selecione…'}</span>
+        <ChevronDown size={15} />
+      </button>
+      {open && (
+        <>
+          <div className="empresa-dropdown-backdrop" onClick={() => setOpen(false)} />
+          <div className="empresa-dropdown">
+            <div className="empresa-dropdown-search">
+              <Search size={14} />
+              <input ref={inputRef} type="text" placeholder="Buscar empresa…"
+                value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <div className="empresa-dropdown-list">
+              {filtradas.length === 0 && <div className="empty-state" style={{ padding: '24px 12px' }}>Nenhuma empresa encontrada.</div>}
+              {filtradas.map(e => (
+                <div key={e.id} className={'empresa-dropdown-item' + (e.id === currentEmpresaId ? ' active' : '')}
+                  onClick={() => { onSelect(e.id); setOpen(false); }}>
+                  <span>{e.nome}</span>
+                  {e.id === currentEmpresaId && <Check size={14} />}
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const TABS = ['empresas', 'extrato', 'relatorios', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
   empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
@@ -224,6 +293,8 @@ export default function Dashboard() {
   const [assCarregando, setAssCarregando] = useState(false);
   const [assSalvando, setAssSalvando] = useState(false);
   const [assForm, setAssForm] = useState(ASS_FORM_VAZIO);
+  const [assModal, setAssModal] = useState(null); // { tipo: 'limite'|'suspender'|'cobranca'|'link', esc, ... }
+  const [assModalSalvando, setAssModalSalvando] = useState(false);
 
   async function apiAssinantes(method, body) {
     const { data: { session } } = await supabase.auth.getSession();
@@ -270,35 +341,58 @@ export default function Dashboard() {
     }
   }
 
-  async function editarLimiteAssinante(esc) {
-    const novo = prompt(`Limite de empresas do plano de "${esc.nome}" (hoje: ${esc.limite_empresas}, em uso: ${esc.qtde_empresas}):`, esc.limite_empresas);
-    if (!novo) return;
-    try {
-      await apiAssinantes('PATCH', { id: esc.id, limite_empresas: parseInt(novo) });
-      notify('Limite atualizado.', 'success');
-      carregarAssinantes();
-    } catch (err) { notify(err.message); }
+  function editarLimiteAssinante(esc) {
+    setAssModal({ tipo: 'limite', esc, valor: String(esc.limite_empresas) });
   }
 
-  async function alternarAtivoAssinante(esc) {
-    const acao = esc.ativo ? 'SUSPENDER' : 'reativar';
-    if (!confirm(`${acao} a assinatura de "${esc.nome}"?${esc.ativo ? ' Todos os usuários dele perdem o acesso na hora.' : ''}`)) return;
+  async function confirmarLimiteAssinante() {
+    const { esc, valor } = assModal;
+    const novo = parseInt(valor);
+    if (!novo || novo < 1) { notify('Informe um número válido.'); return; }
+    setAssModalSalvando(true);
+    try {
+      await apiAssinantes('PATCH', { id: esc.id, limite_empresas: novo });
+      notify('Limite atualizado.', 'success');
+      setAssModal(null);
+      carregarAssinantes();
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setAssModalSalvando(false);
+    }
+  }
+
+  function alternarAtivoAssinante(esc) {
+    setAssModal({ tipo: 'suspender', esc });
+  }
+
+  async function confirmarAlternarAtivo() {
+    const { esc } = assModal;
+    setAssModalSalvando(true);
     try {
       await apiAssinantes('PATCH', { id: esc.id, ativo: !esc.ativo });
       notify(esc.ativo ? 'Assinatura suspensa.' : 'Assinatura reativada.', 'success');
+      setAssModal(null);
       carregarAssinantes();
-    } catch (err) { notify(err.message); }
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setAssModalSalvando(false);
+    }
   }
 
   // Gera o link de assinatura do Mercado Pago pra mandar no WhatsApp do
   // assinante. Quando ele pagar, o webhook libera/ajusta tudo sozinho.
-  async function gerarLinkCobranca(esc) {
-    const opcoes = PLANOS.map((p, i) => `${i + 1} = ${p.nome} (${formatarPreco(p.preco_mensal)}/mês, até ${p.limite_empresas} empresas)`).join('\n');
-    const escolha = prompt(`Qual plano cobrar de "${esc.nome}"?\n${opcoes}\n\nDigite o número:`, '2');
-    const plano = PLANOS[parseInt(escolha) - 1];
-    if (!plano) return;
-    const email = prompt('E-mail de cobrança do assinante (conta Mercado Pago dele):', esc.email_cobranca || '');
-    if (!email) return;
+  function gerarLinkCobranca(esc) {
+    setAssModal({ tipo: 'cobranca', esc, planoId: esc.plano || PLANOS[1]?.id || PLANOS[0].id, email: esc.email_cobranca || '' });
+  }
+
+  async function confirmarGerarLinkCobranca() {
+    const { esc, planoId, email } = assModal;
+    const plano = getPlano(planoId);
+    if (!plano) { notify('Escolha um plano.'); return; }
+    if (!email || !email.includes('@')) { notify('Informe um e-mail válido.'); return; }
+    setAssModalSalvando(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch('/api/assinatura/checkout', {
@@ -308,11 +402,13 @@ export default function Dashboard() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) { notify(json.error || 'Erro ao gerar o link.'); return; }
-      try { await navigator.clipboard.writeText(json.checkout_url); notify('Link de pagamento copiado! Cole no WhatsApp do assinante.', 'success'); }
-      catch { prompt('Copie o link de pagamento:', json.checkout_url); }
+      try { await navigator.clipboard.writeText(json.checkout_url); notify('Link copiado! Cole no WhatsApp do assinante.', 'success'); } catch {}
+      setAssModal({ tipo: 'link', esc, checkoutUrl: json.checkout_url });
       carregarAssinantes();
     } catch (err) {
       notify('Erro: ' + err.message);
+    } finally {
+      setAssModalSalvando(false);
     }
   }
 
@@ -469,6 +565,8 @@ export default function Dashboard() {
   const fileInputRef = useRef(null);
   const pasteRef = useRef(null);
   const extratoFileInputRef = useRef(null);
+  const [fileNamePlano, setFileNamePlano] = useState('');
+  const [fileNameExtrato, setFileNameExtrato] = useState('');
 
   async function handleExtratoFileUpload(file) {
     try {
@@ -679,6 +777,7 @@ export default function Dashboard() {
     }
     setImportStatus(`✔ ${novoPlano.length} contas importadas com sucesso.`);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    setFileNamePlano('');
     if (pasteRef.current) pasteRef.current.value = '';
     if (destEmpresaImport === currentEmpresaId) loadPlanoContas(currentEmpresaId);
   }
@@ -1231,6 +1330,91 @@ export default function Dashboard() {
           onClose={() => setPickerOnSelect(null)}
         />
       )}
+      {assModal && (
+        <div className="modal-overlay" onClick={() => !assModalSalvando && setAssModal(null)}>
+          <div className="modal-panel" onClick={e => e.stopPropagation()}>
+            {assModal.tipo === 'limite' && (
+              <>
+                <h3>Limite de empresas</h3>
+                <p className="hint">Plano de "<strong>{assModal.esc.nome}</strong>" — hoje: {assModal.esc.limite_empresas}, em uso: {assModal.esc.qtde_empresas}.</p>
+                <div className="field-label">Novo limite</div>
+                <input type="number" min="1" style={{ width: '100%' }} value={assModal.valor} autoFocus
+                  onChange={e => setAssModal(m => ({ ...m, valor: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') confirmarLimiteAssinante(); }} />
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setAssModal(null)} disabled={assModalSalvando}>Cancelar</button>
+                  <button className="btn teal" onClick={confirmarLimiteAssinante} disabled={assModalSalvando}>
+                    {assModalSalvando ? (<><span className="spinner" /> Salvando…</>) : 'Salvar'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {assModal.tipo === 'suspender' && (
+              <>
+                <h3>{assModal.esc.ativo ? 'Suspender assinatura' : 'Reativar assinatura'}</h3>
+                <p className="hint">
+                  {assModal.esc.ativo
+                    ? <>Suspender o escritório <strong>"{assModal.esc.nome}"</strong>? Todos os usuários dele perdem o acesso na hora (é reversível).</>
+                    : <>Reativar o escritório <strong>"{assModal.esc.nome}"</strong>? O acesso volta na hora para todos os usuários dele.</>}
+                </p>
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setAssModal(null)} disabled={assModalSalvando}>Cancelar</button>
+                  <button className={assModal.esc.ativo ? 'btn danger' : 'btn teal'} onClick={confirmarAlternarAtivo} disabled={assModalSalvando}>
+                    {assModalSalvando ? (<><span className="spinner" /> Aguarde…</>) : (assModal.esc.ativo ? 'Suspender' : 'Reativar')}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {assModal.tipo === 'cobranca' && (
+              <>
+                <h3>Gerar cobrança</h3>
+                <p className="hint">Escolha o plano para "<strong>{assModal.esc.nome}</strong>". O link gera uma assinatura recorrente no Mercado Pago.</p>
+                <div className="plano-opcoes">
+                  {PLANOS.map(p => (
+                    <div key={p.id} className={'plano-opcao' + (assModal.planoId === p.id ? ' selected' : '')}
+                      onClick={() => setAssModal(m => ({ ...m, planoId: p.id }))}>
+                      <div>
+                        <div className="nome">{p.nome}</div>
+                        <div className="preco">até {p.limite_empresas} empresas</div>
+                      </div>
+                      <div className="preco">{formatarPreco(p.preco_mensal)}/mês</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="field-label">E-mail de cobrança (conta Mercado Pago do assinante)</div>
+                <input type="email" style={{ width: '100%' }} placeholder="financeiro@escritorio.com.br"
+                  value={assModal.email} onChange={e => setAssModal(m => ({ ...m, email: e.target.value }))} />
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setAssModal(null)} disabled={assModalSalvando}>Cancelar</button>
+                  <button className="btn teal" onClick={confirmarGerarLinkCobranca} disabled={assModalSalvando || !assModal.email}>
+                    {assModalSalvando ? (<><span className="spinner" /> Gerando…</>) : 'Gerar link'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {assModal.tipo === 'link' && (
+              <>
+                <h3>Link de pagamento pronto</h3>
+                <p className="hint">Já copiamos pra sua área de transferência — cole no WhatsApp do assinante. Se precisar, copie de novo abaixo.</p>
+                <div className="link-copia">
+                  <input type="text" readOnly value={assModal.checkoutUrl} onFocus={e => e.target.select()} />
+                  <button className="btn secondary" onClick={() => {
+                    navigator.clipboard?.writeText(assModal.checkoutUrl)
+                      .then(() => notify('Link copiado!', 'success'))
+                      .catch(() => notify('Não deu pra copiar automaticamente — selecione o texto e copie manualmente.'));
+                  }}>Copiar</button>
+                </div>
+                <div className="modal-actions">
+                  <button className="btn teal" onClick={() => setAssModal(null)}>Concluir</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={'toast toast-' + t.type}>{t.message}</div>
@@ -1243,14 +1427,9 @@ export default function Dashboard() {
 
       <header className="top">
         <div className="top-inner">
-          <div className="brand">AUTOMAÇÃO</div>
+          <img src="/logo-autocontax.png" alt="AutoContax" className="brand-logo" />
           <div className="top-divider" />
-          <div className="empresa-picker">
-            <label>Empresa selecionada</label>
-            <select value={currentEmpresaId || ''} onChange={e => selecionarEmpresa(e.target.value)}>
-              {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
-            </select>
-          </div>
+          <EmpresaPicker empresas={empresas} currentEmpresaId={currentEmpresaId} onSelect={selecionarEmpresa} />
           <div className="user-block">
             <div className="user-info">
               <div className="user-email">{userEmail}</div>
@@ -1401,7 +1580,8 @@ export default function Dashboard() {
                 {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
               </select>
               <div className="field-label">Importação de arquivo</div>
-              <input type="file" ref={fileInputRef} accept=".xls,.xlsx,.csv,.txt" style={{ width: '100%' }} />
+              <FilePicker id="file-plano-contas" inputRef={fileInputRef} accept=".xls,.xlsx,.csv,.txt"
+                fileName={fileNamePlano} onFileChange={f => setFileNamePlano(f?.name || '')} />
               <div className="field-label">Entrada manual (CSV)</div>
               <textarea ref={pasteRef} placeholder={'7;1.1.1.02;BANCOS CONTA MOVIMENTO;S\n8;1.1.1.02.001;BANCO DO BRASIL;A'} style={{ minHeight: 90 }} />
               <div className="row">
@@ -1487,8 +1667,9 @@ export default function Dashboard() {
 
           <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco (.ofx, Excel, CSV ou TXT). Só tem o extrato em <strong>PDF</strong>? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--teal)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui.</p>
           <div className="row" style={{ marginTop: 0 }}>
-            <input type="file" ref={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
-              onChange={e => { if (e.target.files?.[0]) handleExtratoFileUpload(e.target.files[0]); }} />
+            <FilePicker id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
+              fileName={fileNameExtrato}
+              onFileChange={f => { setFileNameExtrato(f?.name || ''); if (f) handleExtratoFileUpload(f); }} />
             <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>ou cole manualmente abaixo</span>
           </div>
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); ofxModeRef.current = false; setConfirmado(false); existentesCacheRef.current = null; }}
@@ -1497,7 +1678,7 @@ export default function Dashboard() {
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
             </button>
-            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); ofxModeRef.current = false; existentesCacheRef.current = null; manualOverridesRef.current.clear(); if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; }}>Limpar</button>
+            <button className="btn secondary" onClick={() => { setExtratoText(''); setProcessedRows([]); setConfirmado(false); ofxModeRef.current = false; existentesCacheRef.current = null; manualOverridesRef.current.clear(); if (extratoFileInputRef.current) extratoFileInputRef.current.value = ''; setFileNameExtrato(''); }}>Limpar</button>
           </div>
 
           {processedRows.length > 0 && (
@@ -1710,8 +1891,9 @@ export default function Dashboard() {
                 </select>
               </div>
               <div className="field-inline"><label>Arquivo (.xls / .xlsx / .csv)</label>
-                <input type="file" ref={relFileInputRef} accept=".xls,.xlsx,.csv,.txt"
-                  onChange={e => { if (e.target.files?.[0]) handleRelatorioFile(e.target.files[0]); }} />
+                <FilePicker id="file-relatorio" inputRef={relFileInputRef} accept=".xls,.xlsx,.csv,.txt"
+                  fileName={relNomeArquivo}
+                  onFileChange={f => { if (f) handleRelatorioFile(f); }} />
               </div>
             </div>
 
@@ -1788,7 +1970,7 @@ export default function Dashboard() {
                   <button className="btn teal" onClick={salvarRelatorio} disabled={relSalvando || relPreviewItens.length === 0}>
                     {relSalvando ? (<><span className="spinner" /> Salvando…</>) : `Salvar relatório (${relPreviewItens.length} itens)`}
                   </button>
-                  <button className="btn secondary" onClick={() => { setRelRows(null); setRelMapa(null); setRelColunas([]); if (relFileInputRef.current) relFileInputRef.current.value = ''; }}>Cancelar</button>
+                  <button className="btn secondary" onClick={() => { setRelRows(null); setRelMapa(null); setRelColunas([]); setRelNomeArquivo(''); if (relFileInputRef.current) relFileInputRef.current.value = ''; }}>Cancelar</button>
                 </div>
               </>
             )}

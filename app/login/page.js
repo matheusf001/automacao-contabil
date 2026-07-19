@@ -46,7 +46,7 @@ export default function LoginPage() {
         {/* painel esquerdo — gradiente animado com a marca */}
         <div className="auth-side">
           <div className="auth-side-inner">
-            <div className="auth-logo">AUTOCONTAX</div>
+            <div className="auth-brand-mark">AUTO<span>·</span>CONTAX</div>
             <h2>Bom te ver<br />de novo.</h2>
             <p>Seus extratos, regras e importações estão exatamente onde você deixou. Entre e continue de onde parou.</p>
             <div className="auth-side-foot">Acesso seguro · Dados no Supabase</div>
@@ -57,7 +57,7 @@ export default function LoginPage() {
 
         {/* painel direito — formulário */}
         <div className="auth-form">
-          <h1 className="auth-wordmark">AUTOMAÇÃO CONTÁBIL</h1>
+          <img src="/logo-autocontax.png" alt="AutoContax" className="auth-logo-img" />
           <div className="auth-sub">acesso restrito da equipe</div>
 
           {error && <div className="login-error auth-shake">{error}</div>}

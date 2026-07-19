@@ -40,8 +40,6 @@ header.top{
 .top-divider{ width:1px; height: 34px; background: var(--line); }
 .empresa-picker{ display:flex; flex-direction:column; gap:3px; }
 .empresa-picker label{ font-family: var(--sans); font-size:10.5px; font-weight:700; letter-spacing:0.07em; color:var(--ink-soft); text-transform:uppercase; }
-.empresa-picker select{ border:none; background:transparent; font-size: 14.5px; font-weight: 700; color: var(--ink); padding: 0; cursor:pointer; max-width: 340px; }
-.empresa-picker select:focus{ outline:none; }
 .user-block{ margin-left:auto; display:flex; align-items:center; gap: 12px; }
 .user-info{ text-align:right; }
 .user-email{ font-size: 12.5px; font-weight: 600; color: var(--ink); }
@@ -298,8 +296,8 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 }
 .auth-side-inner{ position:relative; z-index:2; padding: 44px 40px; margin: auto 0; animation: side-in 900ms 150ms cubic-bezier(0.22,1,0.36,1) both; }
 @keyframes side-in{ from{ transform: translate3d(-18px,0,0); opacity:0; } to{ transform:none; opacity:1; } }
-.auth-logo{ font-size: 11.5px; font-weight:800; letter-spacing: 0.14em; opacity:0.9; margin-bottom: 26px; }
-.auth-logo span{ margin: 0 5px; opacity:0.6; }
+.auth-brand-mark{ font-size: 11.5px; font-weight:800; letter-spacing: 0.14em; opacity:0.9; margin-bottom: 26px; color:#fff; }
+.auth-brand-mark span{ margin: 0 5px; opacity:0.6; }
 .auth-side h2{ font-size: 30px; line-height:1.15; margin:0 0 14px; font-weight:800; letter-spacing:-0.01em; }
 .auth-side p{ font-size: 13.5px; line-height: 1.65; opacity: 0.88; margin:0; max-width: 300px; }
 .auth-side-foot{ margin-top: 34px; font-size: 11px; opacity: 0.65; letter-spacing: 0.03em; }
@@ -310,11 +308,6 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 
 /* painel do formulário */
 .auth-form{ flex: 1 1 54%; padding: 48px 46px; display:flex; flex-direction:column; justify-content:center; animation: side-in 900ms 260ms cubic-bezier(0.22,1,0.36,1) both; }
-.auth-wordmark{
-  font-size: 21px; font-weight: 900; letter-spacing: -0.01em; margin: 0 0 4px;
-  background: linear-gradient(90deg, var(--teal-dark), var(--teal) 55%, #2563EB);
-  background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-}
 .auth-sub{ font-size: 12px; color: var(--ink-soft); margin-bottom: 26px; }
 .auth-form label{ font-size:12px; color:var(--ink-soft); font-weight:600; display:block; margin-bottom:6px; }
 .auth-field{
@@ -417,3 +410,83 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 /* --- formulários compactos: 2 campos por linha em telas maiores --- */
 .form-grid-2{ display:grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 @media (max-width: 640px){ .form-grid-2{ grid-template-columns: 1fr; } }
+
+/* --- logo (imagem) no cabeçalho e na tela de login --- */
+.brand-logo{ height: 34px; width:auto; display:block; }
+.auth-logo-img{ height: 58px; width:auto; display:block; margin: -6px 0 14px -6px; }
+
+/* --- botão de escolher arquivo (substitui o input nativo feio) --- */
+.file-picker{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin: 2px 0; }
+.file-picker input[type=file]{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
+  clip:rect(0,0,0,0); white-space:nowrap; border:0;
+}
+.file-picker-btn{
+  display:inline-flex; align-items:center; gap:8px; font-family: var(--sans); font-size: 13px; font-weight:600;
+  padding: 9px 16px; border-radius: var(--radius); border: 1px solid var(--line); background:#fff; color: var(--ink);
+  cursor:pointer; transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+  flex-shrink:0;
+}
+.file-picker-btn svg{ color: var(--teal); }
+.file-picker-btn:hover{ border-color:#CBD5E1; background:#F8FAFC; box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.file-picker input[type=file]:focus-visible + .file-picker-btn{ outline:none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(37,99,235,0.13); }
+.file-picker-name{ font-size: 12px; color: var(--ink-soft); font-family: var(--sans); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width: 260px; }
+.file-picker-name.has-file{ color: var(--teal-dark); font-weight:600; }
+
+/* --- dropdown de "empresa selecionada" no cabeçalho, com busca --- */
+.empresa-picker{ position:relative; }
+.empresa-picker-trigger{
+  display:flex; align-items:center; gap:8px; background:transparent; border:none; cursor:pointer;
+  font-size: 14.5px; font-weight: 700; color: var(--ink); padding: 2px 0; font-family: var(--sans);
+  max-width: 340px;
+}
+.empresa-picker-trigger:hover{ color: var(--teal-dark); }
+.empresa-picker-trigger span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.empresa-picker-trigger svg:last-child{ color: var(--ink-soft); flex-shrink:0; transition: transform 0.15s ease; }
+.empresa-picker-trigger.open svg:last-child{ transform: rotate(180deg); }
+.empresa-dropdown{
+  position:absolute; top: calc(100% + 10px); left:0; width: 340px; max-width: 88vw;
+  background: var(--paper-raised); border:1px solid var(--line); border-radius: var(--radius-lg);
+  box-shadow: 0 16px 40px rgba(15,23,42,0.16); z-index: 200; overflow:hidden;
+  animation: fadeIn 0.15s ease-out;
+}
+.empresa-dropdown-search{ position:relative; padding: 10px; border-bottom: 1px solid var(--line-soft); }
+.empresa-dropdown-search svg{ position:absolute; left:22px; top:50%; transform:translateY(-50%); color: var(--ink-soft); pointer-events:none; }
+.empresa-dropdown-search input{ width:100%; padding: 8px 12px 8px 34px; font-size: 13px; }
+.empresa-dropdown-list{ max-height: 320px; overflow-y:auto; padding: 6px; }
+.empresa-dropdown-item{
+  display:flex; align-items:center; justify-content:space-between; gap:8px; padding: 9px 12px; border-radius: 8px;
+  cursor:pointer; font-size: 13px; color: var(--ink); transition: background 0.1s ease;
+}
+.empresa-dropdown-item:hover{ background: var(--teal-bg); }
+.empresa-dropdown-item.active{ background: var(--teal-bg); color: var(--teal-dark); font-weight:700; }
+.empresa-dropdown-item span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.empresa-dropdown-item svg{ color: var(--teal-dark); flex-shrink:0; }
+.empresa-dropdown-backdrop{ position:fixed; inset:0; z-index:190; }
+
+/* --- modal genérico (confirmações e formulários curtos, substitui prompt()/confirm() nativos) --- */
+.modal-overlay{
+  position:fixed; inset:0; background: rgba(15,23,42,0.45); z-index: 1500;
+  display:flex; align-items:center; justify-content:center; padding: 20px;
+  animation: fadeIn 0.15s ease-out;
+}
+.modal-panel{
+  background: var(--paper-raised); width: 440px; max-width: 100%;
+  border-radius: var(--radius-lg); border: 1px solid var(--line); box-shadow: 0 20px 50px rgba(15,23,42,0.25);
+  padding: 24px 26px; animation: card-enter-sm 0.2s cubic-bezier(0.22,1,0.36,1) both;
+}
+@keyframes card-enter-sm{ from{ opacity:0; transform: translateY(10px) scale(0.98); } to{ opacity:1; transform:none; } }
+.modal-panel h3{ margin: 0 0 6px; font-size: 16.5px; font-weight:800; color:#0F172A; }
+.modal-panel .hint{ font-size: 12.5px; color: var(--ink-soft); margin: 0 0 18px; line-height:1.55; }
+.modal-actions{ display:flex; justify-content:flex-end; gap: 10px; margin-top: 22px; }
+.plano-opcoes{ display:flex; flex-direction:column; gap:8px; }
+.plano-opcao{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; padding: 12px 14px;
+  border: 1.5px solid var(--line); border-radius: var(--radius); cursor:pointer; transition: border-color 0.12s ease, background 0.12s ease;
+}
+.plano-opcao:hover{ border-color:#CBD5E1; }
+.plano-opcao.selected{ border-color: var(--teal); background: var(--teal-bg); }
+.plano-opcao .nome{ font-weight:700; font-size:13.5px; }
+.plano-opcao .preco{ font-size:12px; color: var(--ink-soft); }
+.link-copia{ display:flex; gap:8px; align-items:center; background:#F8FAFC; border:1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+.link-copia input{ flex:1; border:none !important; background:transparent; font-size:12px; font-family: var(--mono); padding:2px; }
