@@ -7,6 +7,7 @@ import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, C
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
+import InputModal from '@/components/InputModal';
 import { PLANOS, getPlano, formatarPreco } from '@/lib/planos';
 
 // Barras cinzas pulsantes exibidas enquanto os dados carregam (melhor que "carregando…")
@@ -168,6 +169,7 @@ export default function Dashboard() {
   const [codigoDraft, setCodigoDraft] = useState('');
   const [toasts, setToasts] = useState([]);
   const [pickerOnSelect, setPickerOnSelect] = useState(null);
+  const [inputModal, setInputModal] = useState(null); // { titulo, texto, label, valorInicial, confirmarLabel, onConfirm } — substitui window.prompt()
   const [recentes, setRecentes] = useState([]);
   const [verTodas, setVerTodas] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -259,13 +261,20 @@ export default function Dashboard() {
     setUsrForm({ username: u.username, email: u.email, password: '', role: u.role, acesso_todas: u.acesso_todas, empresas: u.empresas || [] });
   }
 
-  async function redefinirSenhaUsuario(u) {
-    const nova = prompt(`Nova senha para "${u.username || u.email}" (mínimo 6 caracteres):`);
-    if (!nova) return;
-    try {
-      await apiUsuarios('PATCH', { user_id: u.user_id, password: nova });
-      notify('Senha redefinida — avise o usuário.', 'success');
-    } catch (err) { notify(err.message); }
+  function redefinirSenhaUsuario(u) {
+    setInputModal({
+      titulo: 'Redefinir senha',
+      texto: <>Nova senha para <strong>"{u.username || u.email}"</strong> (mínimo 6 caracteres):</>,
+      label: 'Nova senha',
+      confirmarLabel: 'Redefinir',
+      onConfirm: async (nova) => {
+        if (!nova) return;
+        try {
+          await apiUsuarios('PATCH', { user_id: u.user_id, password: nova });
+          notify('Senha redefinida — avise o usuário.', 'success');
+        } catch (err) { notify(err.message); }
+      },
+    });
   }
 
   async function alternarAtivoUsuario(u) {
@@ -716,21 +725,34 @@ export default function Dashboard() {
   function flash(msg) { setSaveFlag(msg); setTimeout(() => setSaveFlag(''), 1200); }
 
   // ---------- EMPRESAS (admin) ----------
-  async function criarEmpresa() {
-    const nome = prompt('Nome da nova empresa:');
-    if (!nome || !nome.trim()) return;
-    const { data, error } = await supabase.from('empresas').insert({ nome: nome.trim() }).select().single();
-    if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
-    await loadEmpresas();
-    selecionarEmpresa(data.id);
-    notify(`Empresa "${nome.trim()}" criada!`, 'success');
+  function criarEmpresa() {
+    setInputModal({
+      titulo: 'Nova empresa',
+      label: 'Nome da nova empresa',
+      confirmarLabel: 'Criar',
+      onConfirm: async (nome) => {
+        if (!nome || !nome.trim()) return;
+        const { data, error } = await supabase.from('empresas').insert({ nome: nome.trim() }).select().single();
+        if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
+        await loadEmpresas();
+        selecionarEmpresa(data.id);
+        notify(`Empresa "${nome.trim()}" criada!`, 'success');
+      },
+    });
   }
-  async function renomearEmpresa(emp) {
-    const novoNome = prompt('Novo nome da empresa:', emp.nome);
-    if (!novoNome || !novoNome.trim()) return;
-    const { error } = await supabase.from('empresas').update({ nome: novoNome.trim() }).eq('id', emp.id);
-    if (error) { notify('Erro ao renomear: ' + error.message); return; }
-    loadEmpresas();
+  function renomearEmpresa(emp) {
+    setInputModal({
+      titulo: 'Renomear empresa',
+      label: 'Novo nome da empresa',
+      valorInicial: emp.nome,
+      confirmarLabel: 'Renomear',
+      onConfirm: async (novoNome) => {
+        if (!novoNome || !novoNome.trim()) return;
+        const { error } = await supabase.from('empresas').update({ nome: novoNome.trim() }).eq('id', emp.id);
+        if (error) { notify('Erro ao renomear: ' + error.message); return; }
+        loadEmpresas();
+      },
+    });
   }
   async function excluirEmpresa(emp) {
     if (empresas.length <= 1) { notify('Precisa manter ao menos uma empresa.'); return; }
@@ -868,14 +890,21 @@ export default function Dashboard() {
 
   // ---------- LAYOUTS (admin) ----------
   const currentLayout = layouts.find(l => String(l.id) === String(currentLayoutId)) || null;
-  async function novoLayout() {
-    const nome = prompt('Nome do novo layout (ex: nome do banco):');
-    if (!nome || !nome.trim()) return;
-    const base = currentLayout || { separador: 'auto', col_data: 0, col_historico: 2, col_valor: 1, cd_mode: 'coluna', col_cd: 3, col_detalhamento: 4 };
-    const { data, error } = await supabase.from('layouts_banco').insert({ ...base, id: undefined, nome: nome.trim() }).select().single();
-    if (error) { notify('Erro: ' + error.message); return; }
-    await loadLayouts();
-    setCurrentLayoutId(data.id);
+  function novoLayout() {
+    setInputModal({
+      titulo: 'Novo layout de banco',
+      label: 'Nome do novo layout',
+      placeholder: 'ex: nome do banco',
+      confirmarLabel: 'Criar',
+      onConfirm: async (nome) => {
+        if (!nome || !nome.trim()) return;
+        const base = currentLayout || { separador: 'auto', col_data: 0, col_historico: 2, col_valor: 1, cd_mode: 'coluna', col_cd: 3, col_detalhamento: 4 };
+        const { data, error } = await supabase.from('layouts_banco').insert({ ...base, id: undefined, nome: nome.trim() }).select().single();
+        if (error) { notify('Erro: ' + error.message); return; }
+        await loadLayouts();
+        setCurrentLayoutId(data.id);
+      },
+    });
   }
   async function excluirLayout() {
     if (layouts.length <= 1) { notify('Precisa manter ao menos um layout.'); return; }
@@ -1330,6 +1359,13 @@ export default function Dashboard() {
           onClose={() => setPickerOnSelect(null)}
         />
       )}
+      {inputModal && (
+        <InputModal
+          {...inputModal}
+          onConfirm={(valor) => { setInputModal(null); inputModal.onConfirm(valor); }}
+          onClose={() => setInputModal(null)}
+        />
+      )}
       {assModal && (
         <div className="modal-overlay" onClick={() => !assModalSalvando && setAssModal(null)}>
           <div className="modal-panel" onClick={e => e.stopPropagation()}>
@@ -1606,7 +1642,7 @@ export default function Dashboard() {
               <select value={currentLayoutId || ''} onChange={e => setCurrentLayoutId(e.target.value)}>
                 {layouts.map(l => <option key={l.id} value={l.id}>{l.nome}</option>)}
               </select>
-              {isAdmin && <button className="btn secondary" onClick={novoLayout}>+ Novo layout</button>}
+              {isAdmin && <button className="btn secondary" onClick={() => novoLayout()}>+ Novo layout</button>}
               {isAdmin && <button className="btn danger" onClick={excluirLayout}>Excluir layout</button>}
             </div>
             {currentLayout && (
