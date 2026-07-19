@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle } from 'lucide-react';
-import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
+import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, downloadFileAnsi, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
 import InputModal from '@/components/InputModal';
@@ -1329,15 +1329,28 @@ export default function Dashboard() {
     ));
   }
 
-  function exportarImportacao(onlyMatched) {
-    let csv = 'DATA;CONTA DEVEDORA;CONTA CREDORA;VALOR;HISTORICO;STATUS\n';
-    processedRows.forEach(r => {
-      if (r.status === 'duplicado') return;
-      if (onlyMatched && r.status !== 'automatico') return;
-      const historicoFull = r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico;
-      csv += `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.origem === 'manual' ? 'manual' : r.status}\n`;
+  function exportarImportacao(onlyMatched, formato = 'txt') {
+    const linhas = processedRows.filter(r => {
+      if (r.status === 'duplicado') return false;
+      if (onlyMatched && r.status !== 'automatico') return false;
+      return true;
     });
-    downloadFile(csv, (onlyMatched ? 'importacao_classificados_' : 'importacao_') + currentEmpresaId + '.csv');
+    const nomeBase = (onlyMatched ? 'importacao_classificados_' : 'importacao_') + currentEmpresaId;
+    if (formato === 'txt') {
+      // .txt pro Domínio: sem cabeçalho, sem aspas, sem coluna de status, separado por ";" e em ANSI
+      const txt = linhas.map(r => {
+        const historicoFull = (r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico).replace(/;/g, ',');
+        return `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};${historicoFull}`;
+      }).join('\r\n') + '\r\n';
+      downloadFileAnsi(txt, nomeBase + '.txt');
+    } else {
+      let csv = 'DATA;CONTA DEVEDORA;CONTA CREDORA;VALOR;HISTORICO;STATUS\n';
+      linhas.forEach(r => {
+        const historicoFull = r.detalhamento ? `${r.historico} - ${r.detalhamento}` : r.historico;
+        csv += `${r.data};${r.contaDevedora};${r.contaCredora};${r.valor};"${historicoFull.replace(/"/g, "'")}";${r.origem === 'manual' ? 'manual' : r.status}\n`;
+      });
+      downloadFile(csv, nomeBase + '.csv');
+    }
   }
 
   if (checkingAuth) return <div className="center-loading">verificando sessão…</div>;
@@ -2182,10 +2195,11 @@ export default function Dashboard() {
           ) : (
             <>
               <div className="row" style={{ marginTop: 0 }}>
-                <button className="btn teal" onClick={() => exportarImportacao(false)}>Exportar .csv — Domínio</button>
-                <button className="btn secondary" onClick={() => exportarImportacao(true)}>Exportar só classificados</button>
+                <button className="btn teal" onClick={() => exportarImportacao(false, 'txt')}>Exportar .txt — Domínio</button>
+                <button className="btn secondary" onClick={() => exportarImportacao(true, 'txt')}>Exportar só classificados (.txt)</button>
+                <button className="btn secondary" onClick={() => exportarImportacao(false, 'csv')}>Exportar .csv — conferência</button>
               </div>
-              <p className="hint">Lançamentos marcados como "duplicado" não entram no arquivo exportado.</p>
+              <p className="hint">O <strong>.txt</strong> sai pronto pro Domínio: separado por ponto e vírgula (;), sem cabeçalho e em codificação ANSI. O <strong>.csv</strong> inclui cabeçalho e a coluna de status, pra conferir no Excel. Lançamentos marcados como "duplicado" não entram em nenhum arquivo.</p>
               <div className="table-wrap" style={{ marginTop: 14 }}><table>
                 <thead><tr><th>DATA</th><th className="num">DEV.</th><th className="num">CRED.</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>STATUS</th></tr></thead>
                 <tbody>
