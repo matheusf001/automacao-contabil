@@ -1427,7 +1427,7 @@ export default function Dashboard() {
 
       <header className="top">
         <div className="top-inner">
-          <img src="/logo-autocontax.png" alt="AutoContax" className="brand-logo" />
+          <img src="/logo.png" alt="AutoContax" title="AutoContax" className="brand-logo" />
           <div className="top-divider" />
           <EmpresaPicker empresas={empresas} currentEmpresaId={currentEmpresaId} onSelect={selecionarEmpresa} />
           <div className="user-block">

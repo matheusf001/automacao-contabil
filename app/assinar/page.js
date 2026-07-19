@@ -31,7 +31,7 @@ export default function AssinarPage() {
   return (
     <div className="assinar-bg">
       <div className="assinar-wrap">
-        <div className="brand" style={{ textAlign: 'center', fontSize: 24 }}>AUTOMAÇÃO CONTÁBIL</div>
+        <img src="/logo.png" alt="AutoContax" style={{ height: 44, width: 'auto', display: 'block', margin: '0 auto' }} />
         <p className="assinar-sub">Classificação de extratos bancários com regras e IA, pronta pra importar no Domínio.<br />Escolha o plano, pague com cartão pelo Mercado Pago e o acesso libera sozinho.</p>
 
         {!planoEscolhido ? (
