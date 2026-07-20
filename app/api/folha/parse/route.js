@@ -1,11 +1,11 @@
 // Rota de API — roda NO SERVIDOR, nunca no navegador.
 // Recebe o PDF da folha de pagamento (Relatório de Líquidos ou Extrato
-// Mensal), extrai o texto com pdf-parse e devolve os funcionários com
-// seus valores, prontos pra conferência na aba Folha do dashboard.
+// Mensal), extrai o texto com pdfjs (via lib/pdfTexto) e devolve os
+// funcionários com seus valores, prontos pra conferência na aba Folha.
 // Não grava nada no banco — quem salva é o navegador, com a chave anon
 // e as travas RLS de sempre.
 
-import { PDFParse } from 'pdf-parse';
+import { extrairTextoPdf } from '@/lib/pdfTexto';
 import { parseFolhaTexto } from '@/lib/folhaParser';
 
 export const runtime = 'nodejs';
@@ -27,11 +27,10 @@ export async function POST(req) {
     const dados = new Uint8Array(await arquivo.arrayBuffer());
     let texto = '';
     try {
-      const parser = new PDFParse({ data: dados });
-      texto = (await parser.getText()).text || '';
+      texto = await extrairTextoPdf(dados);
     } catch (e) {
-      console.error('folha/parse — PDF ilegível:', e?.message);
-      return Response.json({ error: 'Não consegui abrir este PDF — confira se o arquivo não está corrompido ou protegido por senha.' }, { status: 400 });
+      console.error('folha/parse — PDF ilegível:', e);
+      return Response.json({ error: 'Não consegui abrir este PDF — confira se o arquivo não está corrompido ou protegido por senha.', detalhe: String(e?.message || e) }, { status: 400 });
     }
 
     const folha = parseFolhaTexto(texto);
@@ -39,6 +38,7 @@ export async function POST(req) {
     return Response.json({ ...folha, arquivoNome: arquivo.name || null });
   } catch (e) {
     console.error('folha/parse:', e);
-    return Response.json({ error: 'Erro inesperado ao ler o PDF — tente de novo.' }, { status: 500 });
+    // "detalhe" ajuda a diagnosticar em produção pela aba Network do navegador
+    return Response.json({ error: 'Erro inesperado ao ler o PDF — tente de novo.', detalhe: String(e?.message || e) }, { status: 500 });
   }
 }
