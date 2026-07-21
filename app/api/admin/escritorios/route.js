@@ -122,3 +122,60 @@ export async function PATCH(request) {
   if (error) return erro('Erro ao atualizar: ' + error.message, 500);
   return NextResponse.json({ ok: true });
 }
+
+
+// ---------- EXCLUIR assinante (escritório + TODOS os dados dele) ----------
+export async function DELETE(request) {
+  const sb = clienteAdmin();
+  if (!sb) return erro('SUPABASE_SERVICE_ROLE_KEY não configurada no servidor.', 500);
+  if (!(await exigirSuper(request, sb))) return erro('Acesso exclusivo do dono do sistema.', 403);
+
+  const body = await request.json().catch(() => ({}));
+  const id = String(body.id || '');
+  if (!id) return erro('id obrigatório.');
+
+  // Nunca deixa excluir um escritório que contenha o dono do sistema (super).
+  const { data: perfisEsc, error: ePerfis } = await sb.from('perfis')
+    .select('user_id, super').eq('escritorio_id', id);
+  if (ePerfis) return erro('Erro ao checar usuários do assinante: ' + ePerfis.message, 500);
+  if ((perfisEsc || []).some(p => p.super === true)) {
+    return erro('Este escritório contém o dono do sistema — não pode ser excluído.', 400);
+  }
+
+  // 1) Empresas do escritório + tudo preso a elas (filhos primeiro, para não bater em FK).
+  const { data: empresas, error: eEmp } = await sb.from('empresas').select('id').eq('escritorio_id', id);
+  if (eEmp) return erro('Erro ao listar empresas do assinante: ' + eEmp.message, 500);
+  const empresaIds = (empresas || []).map(e => e.id);
+
+  if (empresaIds.length) {
+    const tabelasFilhas = [
+      'lancamentos_importados', 'extratos_processados',
+      'relatorio_itens', 'relatorios_financeiros',
+      'folha_itens', 'folhas', 'folha_config', 'funcionarios',
+      'empresa_layout_conta', 'plano_contas', 'regras', 'perfis_empresas',
+    ];
+    for (const t of tabelasFilhas) {
+      const { error } = await sb.from(t).delete().in('empresa_id', empresaIds);
+      if (error) return erro(`Erro ao apagar ${t}: ` + error.message, 500);
+    }
+    const { error: eDelEmp } = await sb.from('empresas').delete().eq('escritorio_id', id);
+    if (eDelEmp) return erro('Erro ao apagar empresas: ' + eDelEmp.message, 500);
+  }
+
+  // 2) Usuários do escritório: apaga o perfil primeiro (FK) e depois o login (auth).
+  const { error: eDelPerfis } = await sb.from('perfis').delete().eq('escritorio_id', id);
+  if (eDelPerfis) return erro('Erro ao apagar perfis: ' + eDelPerfis.message, 500);
+  for (const perfil of (perfisEsc || [])) {
+    await sb.auth.admin.deleteUser(perfil.user_id).catch(() => {});
+  }
+
+  // 3) Layouts próprios do escritório (os globais, com escritorio_id nulo, ficam) e pagamentos.
+  await sb.from('layouts_banco').delete().eq('escritorio_id', id);
+  await sb.from('pagamentos_assinatura').delete().eq('escritorio_id', id);
+
+  // 4) Por fim, o próprio escritório.
+  const { error: eDelEsc } = await sb.from('escritorios').delete().eq('id', id);
+  if (eDelEsc) return erro('Erro ao apagar o escritório: ' + eDelEsc.message, 500);
+
+  return NextResponse.json({ ok: true });
+}

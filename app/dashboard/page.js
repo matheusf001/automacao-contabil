@@ -22,14 +22,26 @@ function SkeletonTabela({ linhas = 4 }) {
   );
 }
 
-// Botão de "Escolher arquivo" estilizado (o input nativo fica escondido, mas continua acessível por teclado)
+// Botão de "Escolher arquivo" estilizado (o input nativo fica escondido, mas continua acessível por teclado).
+// Também aceita arrastar-e-soltar (drag & drop): dá pra soltar o arquivo em cima da área toda.
 function FilePicker({ id, inputRef, accept, fileName, onFileChange }) {
+  const [arrastando, setArrastando] = useState(false);
+  function handleDrop(e) {
+    e.preventDefault();
+    setArrastando(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) onFileChange(f);
+  }
   return (
-    <div className="file-picker">
+    <div className={'file-picker' + (arrastando ? ' drag-over' : '')}
+      onDragOver={e => { e.preventDefault(); setArrastando(true); }}
+      onDragEnter={e => { e.preventDefault(); setArrastando(true); }}
+      onDragLeave={e => { e.preventDefault(); setArrastando(false); }}
+      onDrop={handleDrop}>
       <input type="file" id={id} ref={inputRef} accept={accept}
         onChange={e => onFileChange(e.target.files?.[0] || null)} />
       <label htmlFor={id} className="file-picker-btn"><Upload size={14} />Escolher arquivo</label>
-      <span className={'file-picker-name' + (fileName ? ' has-file' : '')}>{fileName || 'Nenhum arquivo escolhido'}</span>
+      <span className={'file-picker-name' + (fileName ? ' has-file' : '')}>{fileName || 'ou arraste o arquivo até aqui'}</span>
     </div>
   );
 }
@@ -161,6 +173,7 @@ export default function Dashboard() {
   const [empresaListSearch, setEmpresaListSearch] = useState('');
   const [extratoText, setExtratoText] = useState('');
   const [processedRows, setProcessedRows] = useState([]);
+  const [filtroStatus, setFiltroStatus] = useState('todos'); // filtro da tabela de lançamentos (aba Extrato)
   const [confirmado, setConfirmado] = useState(false);
   const [confirmando, setConfirmando] = useState(false); // trava contra duplo clique (evita gravar a importação em dobro)
   const [processando, setProcessando] = useState(false);
@@ -401,6 +414,30 @@ export default function Dashboard() {
       notify(esc.ativo ? 'Assinatura suspensa.' : 'Assinatura reativada.', 'success');
       setAssModal(null);
       carregarAssinantes();
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setAssModalSalvando(false);
+    }
+  }
+
+  function excluirAssinante(esc) {
+    setAssModal({ tipo: 'excluir', esc, confirmNome: '' });
+  }
+
+  async function confirmarExcluirAssinante() {
+    const { esc, confirmNome } = assModal;
+    if ((confirmNome || '').trim().toLowerCase() !== esc.nome.trim().toLowerCase()) {
+      notify('Digite o nome do escritório exatamente para confirmar a exclusão.');
+      return;
+    }
+    setAssModalSalvando(true);
+    try {
+      await apiAssinantes('DELETE', { id: esc.id });
+      notify(`Assinante "${esc.nome}" excluído definitivamente.`, 'success');
+      setAssModal(null);
+      await carregarAssinantes();
+      await loadEmpresas();
     } catch (err) {
       notify(err.message);
     } finally {
@@ -1230,7 +1267,18 @@ export default function Dashboard() {
       const layoutUsado = ofxModeRef.current ? LAYOUT_OFX : currentLayout;
       const rows = parseExtrato(extratoText, layoutUsado);
       const classificado = classificar(rows, regrasAtuais, contaBancaria);
-      const withFingerprint = classificado.map(r => ({ ...r, fingerprint: fingerprintOf(r.data, r.valor, r.historico) }));
+      // Duas transações REAIS podem ter a mesma data+valor+histórico (ex.: dois Pix
+      // iguais no mesmo dia). Pra nenhuma se perder na chave única do banco, as
+      // repetições ganham um sufixo |2, |3... — estável entre reprocessamentos do
+      // mesmo arquivo, então a detecção de duplicidade continua funcionando.
+      const contagemFp = new Map();
+      const withFingerprint = classificado.map(r => {
+        let fp = fingerprintOf(r.data, r.valor, r.historico);
+        const n = (contagemFp.get(fp) || 0) + 1;
+        contagemFp.set(fp, n);
+        if (n > 1) fp = `${fp}|${n}`;
+        return { ...r, fingerprint: fp };
+      });
 
       let existentes;
       if (opts.reuseCache && existentesCacheRef.current) {
@@ -1365,14 +1413,29 @@ export default function Dashboard() {
       }).select().single();
       if (errExtrato) { notify('Erro ao salvar histórico: ' + errExtrato.message); return; }
 
-      const linhas = naoDuplicados.map(r => ({
-        empresa_id: currentEmpresaId, extrato_id: extrato.id, fingerprint: r.fingerprint,
-        data: r.data, valor: r.valor, historico: r.historico, detalhamento: r.detalhamento, cd: r.cd,
-        conta_credora: r.contaCredora || null, conta_devedora: r.contaDevedora || null, status: r.status,
-      }));
+      // Tira duplicados DENTRO do próprio lote: a chave única do banco é
+      // (empresa_id, fingerprint) e o fingerprint é data+valor+histórico. Duas linhas
+      // do mesmo extrato com esses três campos iguais colidiam e derrubavam a
+      // gravação inteira (erro 409). Com o sufixo |2, |3... que o processamento
+      // agora acrescenta às repetições, isso não deve mais acontecer — este Set
+      // é só uma rede de segurança extra.
+      const vistosNoLote = new Set();
+      const linhas = [];
+      for (const r of naoDuplicados) {
+        if (vistosNoLote.has(r.fingerprint)) continue;
+        vistosNoLote.add(r.fingerprint);
+        linhas.push({
+          empresa_id: currentEmpresaId, extrato_id: extrato.id, fingerprint: r.fingerprint,
+          data: r.data, valor: r.valor, historico: r.historico, detalhamento: r.detalhamento, cd: r.cd,
+          conta_credora: r.contaCredora || null, conta_devedora: r.contaDevedora || null, status: r.status,
+        });
+      }
       const chunkSize = 300;
       for (let i = 0; i < linhas.length; i += chunkSize) {
-        const { error } = await supabase.from('lancamentos_importados').insert(linhas.slice(i, i + chunkSize));
+        // upsert com ignoreDuplicates: se um fingerprint já existir no banco (ex.: extrato
+        // reenviado), ele é ignorado em vez de estourar a chave única e derrubar tudo.
+        const { error } = await supabase.from('lancamentos_importados')
+          .upsert(linhas.slice(i, i + chunkSize), { onConflict: 'empresa_id,fingerprint', ignoreDuplicates: true });
         if (error) { notify('Erro ao salvar lançamentos: ' + error.message); return; }
       }
       setConfirmado(true);
@@ -1655,6 +1718,27 @@ export default function Dashboard() {
                 </div>
               </>
             )}
+
+            {assModal.tipo === 'excluir' && (
+              <>
+                <h3 style={{ color: 'var(--danger)' }}>Excluir assinante</h3>
+                <p className="hint">
+                  Isto apaga <strong>para sempre</strong> o escritório <strong>"{assModal.esc.nome}"</strong> e tudo dele:
+                  {' '}{assModal.esc.qtde_empresas} empresa(s), {assModal.esc.qtde_usuarios} usuário(s), planos de contas, regras, extratos e histórico. Não dá pra desfazer.
+                </p>
+                <p className="hint">Se é só uma pausa, prefira <strong>suspender</strong>. Para confirmar, digite o nome do escritório abaixo:</p>
+                <input type="text" style={{ width: '100%' }} placeholder={assModal.esc.nome} value={assModal.confirmNome} autoFocus
+                  onChange={e => setAssModal(m => ({ ...m, confirmNome: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') confirmarExcluirAssinante(); }} />
+                <div className="modal-actions">
+                  <button className="btn secondary" onClick={() => setAssModal(null)} disabled={assModalSalvando}>Cancelar</button>
+                  <button className="btn danger" onClick={() => confirmarExcluirAssinante()}
+                    disabled={assModalSalvando || (assModal.confirmNome || '').trim().toLowerCase() !== assModal.esc.nome.trim().toLowerCase()}>
+                    {assModalSalvando ? (<><span className="spinner" /> Excluindo…</>) : 'Excluir para sempre'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1857,7 +1941,7 @@ export default function Dashboard() {
                 <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Conta bancária desta importação:</label>
                 <input type="text" list="contas-datalist" placeholder="buscar conta…" style={{ minWidth: 280 }}
                   defaultValue={contaBancaria ? `${contaBancaria} — ${findContaDesc(contaBancaria)}` : ''}
-                  key={`${currentEmpresaId}-${currentLayoutId}`}
+                  key={`${currentEmpresaId}-${currentLayoutId}-${contaBancaria ?? ''}`}
                   onBlur={e => salvarContaBancaria(extractCodigoFromPicked(e.target.value))} />
                 <button className="btn secondary" onClick={() => openPicker((conta) => salvarContaBancaria(conta.codigo))}><Search size={13} style={{marginRight:5,verticalAlign:-2}}/>Buscar conta</button>
                 <span className={'save-flag' + (saveFlag ? ' show' : '')}>{saveFlag}</span>
@@ -2034,10 +2118,34 @@ export default function Dashboard() {
                 útil nos casos ambíguos: DARF (INSS × PIS × COFINS × IRPJ/CSLL), sócio (retirada × pró-labore), funcionário (salário × adiantamento), aplicação etc.
                 A escolha vale só para aquela linha e aparece como <span className="badge ok">✎ manual</span>.
               </p>
+              <div className="row filtro-status" style={{ marginTop: 0, gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: 12.5, color: 'var(--ink-soft)', fontWeight: 600 }}>Filtrar:</span>
+                {[
+                  ['todos', 'Todos', processedRows.length],
+                  ['automatico', 'Automático', processedRows.filter(r => r.status === 'automatico' && r.origem !== 'manual').length],
+                  ['manual', 'Manual', processedRows.filter(r => r.status === 'automatico' && r.origem === 'manual').length],
+                  ['sem_match', 'Sem match', processedRows.filter(r => r.status === 'sem match').length],
+                  ...(processedRows.some(r => r.status === 'duplicado') ? [['duplicado', 'Duplicado', processedRows.filter(r => r.status === 'duplicado').length]] : []),
+                ].map(([val, lbl, qtd]) => (
+                  <button key={val} type="button"
+                    className={'filtro-chip' + (filtroStatus === val ? ' active' : '')}
+                    onClick={() => setFiltroStatus(val)}>
+                    {lbl} <span className="filtro-chip-num">{qtd}</span>
+                  </button>
+                ))}
+              </div>
               <div className="table-wrap"><table>
                 <thead><tr><th>DATA</th><th className="num">VALOR</th><th>HISTÓRICO</th><th>DETALHAMENTO</th><th>C/D</th><th className="num">DEV.</th><th className="num">CRED.</th><th>STATUS</th></tr></thead>
                 <tbody>
-                  {processedRows.map((r, i) => (
+                  {processedRows.map((r, i) => ({ r, i }))
+                    .filter(({ r }) => {
+                      if (filtroStatus === 'automatico') return r.status === 'automatico' && r.origem !== 'manual';
+                      if (filtroStatus === 'manual') return r.status === 'automatico' && r.origem === 'manual';
+                      if (filtroStatus === 'sem_match') return r.status === 'sem match';
+                      if (filtroStatus === 'duplicado') return r.status === 'duplicado';
+                      return true;
+                    })
+                    .map(({ r, i }) => (
                     <tr key={i} className={r.status !== 'automatico' ? 'warn-row' : ''}>
                       <td className="mono">{r.data}</td><td className="num">{r.valor}</td>
                       <td>
@@ -2490,7 +2598,13 @@ export default function Dashboard() {
       {tab === 'contas' && (
         <section className="panel">
           <h2>Plano de contas — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
-          <p className="hint">{planoContas.length} contas cadastradas. Use a busca para achar rápido.</p>
+          <div className="stats" style={{ marginTop: 2 }}>
+            <div className="stat">{planoContas.length} contas no total</div>
+            <div className="stat ok">{planoContas.filter(c => c.tipo === 'A').length} analíticas</div>
+            <div className="stat" style={{ background: '#FBEEE1', color: '#B5651D', borderColor: '#EED6BC' }}>{planoContas.filter(c => c.tipo === 'S').length} sintéticas (totalizadoras)</div>
+            {contasFiltradas.length !== planoContas.length && <div className="stat warn">{contasFiltradas.length} exibidas no filtro</div>}
+          </div>
+          <p className="hint" style={{ marginBottom: 4 }}>As contas <strong>sintéticas</strong> (destacadas) só totalizam e não recebem lançamento; as <strong>analíticas</strong> são as que recebem. Use a busca para achar rápido.</p>
           <div className="row" style={{ marginTop: 0 }}>
             <input type="search" placeholder="Buscar por código ou descrição…" style={{ minWidth: 280 }}
               value={contasSearch} onChange={e => setContasSearch(e.target.value)} />
@@ -2505,12 +2619,15 @@ export default function Dashboard() {
             <table>
               <thead><tr><th style={{ width: '9%' }}>CÓDIGO</th><th style={{ width: '15%' }}>CLASSIFICAÇÃO</th><th style={{ width: '13%' }}>GRUPO</th><th>DESCRIÇÃO</th><th style={{ width: '10%' }}>TIPO</th><th style={{ width: 34 }}></th></tr></thead>
               <tbody>
-                {contasFiltradas.map(c => (
-                  <tr key={c.id} title={c.updated_by ? `editado por ${c.updated_by} em ${fmtData(c.updated_at)}` : ''}>
-                    <td><input className="cell-edit" defaultValue={c.codigo} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'codigo', e.target.value)} /></td>
-                    <td><input className="cell-edit" defaultValue={c.classificacao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'classificacao', e.target.value)} /></td>
+                {contasFiltradas.map(c => {
+                  const nivel = Math.max(0, String(c.classificacao || '').split('.').filter(Boolean).length - 1);
+                  const sintetica = c.tipo === 'S';
+                  return (
+                  <tr key={c.id} className={sintetica ? 'conta-sintetica' : ''} title={c.updated_by ? `editado por ${c.updated_by} em ${fmtData(c.updated_at)}` : ''}>
+                    <td><input className="cell-edit mono" defaultValue={c.codigo} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'codigo', e.target.value)} /></td>
+                    <td><input className="cell-edit mono" defaultValue={c.classificacao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'classificacao', e.target.value)} /></td>
                     <td className="mono" style={{ fontSize: 11, color: 'var(--ink-soft)' }}>{grupoOf(c.classificacao)}</td>
-                    <td><input className="cell-edit" defaultValue={c.descricao} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'descricao', e.target.value)} /></td>
+                    <td><input className="cell-edit" style={{ paddingLeft: 8 + nivel * 16, fontWeight: sintetica ? 700 : 400 }} defaultValue={c.descricao} readOnly={!isAdmin} onBlur={e => isAdmin && updateConta(c, 'descricao', e.target.value)} /></td>
                     <td>
                       {isAdmin ? (
                         <select defaultValue={c.tipo || ''} onChange={e => updateConta(c, 'tipo', e.target.value || null)} style={{ fontSize: 11.5 }}>
@@ -2524,7 +2641,8 @@ export default function Dashboard() {
                     </td>
                     <td>{isAdmin && <button className="icon-btn icon-btn-danger" onClick={() => deleteConta(c)}><Trash2 size={14} /></button>}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -2640,6 +2758,9 @@ export default function Dashboard() {
                           <button className="icon-btn" title={esc.ativo ? 'Suspender assinatura' : 'Reativar assinatura'} onClick={() => alternarAtivoAssinante(esc)}>
                             {esc.ativo ? <UserX size={14} /> : <UserCheck size={14} />}
                           </button>
+                        )}
+                        {esc.id !== meuEscritorioId && (
+                          <button className="icon-btn icon-btn-danger" title="Excluir assinante para sempre" onClick={() => excluirAssinante(esc)}><Trash2 size={14} /></button>
                         )}
                       </td>
                     </tr>
