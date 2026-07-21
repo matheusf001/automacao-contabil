@@ -174,6 +174,7 @@ export default function Dashboard() {
   const [extratoText, setExtratoText] = useState('');
   const [processedRows, setProcessedRows] = useState([]);
   const [filtroStatus, setFiltroStatus] = useState('todos'); // filtro da tabela de lançamentos (aba Extrato)
+  const [regrasSearch, setRegrasSearch] = useState(''); // busca na aba Regras
   const [confirmado, setConfirmado] = useState(false);
   const [confirmando, setConfirmando] = useState(false); // trava contra duplo clique (evita gravar a importação em dobro)
   const [processando, setProcessando] = useState(false);
@@ -484,8 +485,9 @@ export default function Dashboard() {
   }
 
   // ---------- NOVA EMPRESA COM BUSCA DE CNPJ ----------
+  const EMPRESA_VAZIA = { cnpj: '', nome: '', municipio: '', uf: '' };
   const [mostrarNovaEmpresa, setMostrarNovaEmpresa] = useState(false);
-  const [novaEmpresa, setNovaEmpresa] = useState({ cnpj: '', nome: '' });
+  const [novaEmpresa, setNovaEmpresa] = useState(EMPRESA_VAZIA);
   const [buscandoCNPJ, setBuscandoCNPJ] = useState(false);
   const [salvandoEmpresa, setSalvandoEmpresa] = useState(false);
 
@@ -508,7 +510,7 @@ export default function Dashboard() {
       }
       const d = await res.json();
       const nome = d.razao_social || d.nome_fantasia || '';
-      setNovaEmpresa(f => ({ ...f, nome }));
+      setNovaEmpresa(f => ({ ...f, nome, municipio: d.municipio || '', uf: d.uf || '' }));
       const situacao = d.descricao_situacao_cadastral || '';
       notify(`Encontrado: ${nome}${situacao ? ` (situação: ${situacao})` : ''}${d.municipio ? ` — ${d.municipio}/${d.uf}` : ''}`, 'success');
     } catch (err) {
@@ -524,15 +526,25 @@ export default function Dashboard() {
     setSalvandoEmpresa(true);
     try {
       const cnpjDigitos = novaEmpresa.cnpj.replace(/\D/g, '');
-      const payload = { nome, cnpj: cnpjDigitos.length === 14 ? formatarCNPJ(cnpjDigitos) : null };
+      const payload = {
+        nome,
+        cnpj: cnpjDigitos.length === 14 ? formatarCNPJ(cnpjDigitos) : null,
+        municipio: novaEmpresa.municipio.trim() || null,
+        uf: novaEmpresa.uf.trim().toUpperCase() || null,
+      };
       // no modo suporte, a empresa nasce no escritório do assinante que está sendo atendido
       if (souSuper && escritorioVisao) payload.escritorio_id = escritorioVisao;
-      const { data, error } = await supabase.from('empresas').insert(payload).select().single();
+      let { data, error } = await supabase.from('empresas').insert(payload).select().single();
+      if (error && /municipio|uf/.test(error.message)) {
+        // banco ainda sem as colunas novas (script sql/empresas_municipio.sql não rodado) — salva sem elas
+        const { municipio, uf, ...semMunicipio } = payload;
+        ({ data, error } = await supabase.from('empresas').insert(semMunicipio).select().single());
+      }
       if (error) { notify('Erro ao criar empresa: ' + error.message); return; }
       await loadEmpresas();
       selecionarEmpresa(data.id);
       setMostrarNovaEmpresa(false);
-      setNovaEmpresa({ cnpj: '', nome: '' });
+      setNovaEmpresa(EMPRESA_VAZIA);
       notify(`Empresa "${nome}" criada!`, 'success');
     } finally {
       setSalvandoEmpresa(false);
@@ -1796,8 +1808,8 @@ export default function Dashboard() {
           <div>
           <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
             <div>
-              <h2>Gestão de Empresas</h2>
-              <p className="hint" style={{ marginBottom: 0 }}>Gerencie as {empresas.length} entidades cadastradas — cada uma com seu próprio plano de contas e regras.
+              <h2>Empresas</h2>
+              <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} empresas cadastradas, cada uma com plano de contas e regras próprios.
                 {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
               </p>
             </div>
@@ -1806,8 +1818,8 @@ export default function Dashboard() {
 
           {isAdmin && mostrarNovaEmpresa && (
             <div className="card destaque" style={{ marginTop: 14 }}>
-              <h3 style={{ fontSize: 15 }}>Cadastrar nova empresa</h3>
-              <p className="hint" style={{ marginBottom: 0 }}>Digite o CNPJ e clique em Buscar: o nome vem preenchido direto da Receita Federal. Sem CNPJ (ex: produtor rural CPF), preencha só o nome.</p>
+              <h3 style={{ fontSize: 15 }}>Nova empresa</h3>
+              <p className="hint" style={{ marginBottom: 0 }}>Digite o CNPJ e busque: nome e município vêm da Receita Federal. Sem CNPJ, preencha só o nome.</p>
               <div className="row">
                 <div className="field-inline"><label>CNPJ</label>
                   <input type="text" style={{ width: 180 }} placeholder="00.000.000/0000-00" value={novaEmpresa.cnpj}
@@ -1822,10 +1834,20 @@ export default function Dashboard() {
               <input type="text" style={{ width: '100%' }} placeholder="preenchido pela busca, ou digite" value={novaEmpresa.nome}
                 onChange={e => setNovaEmpresa(f => ({ ...f, nome: e.target.value }))} />
               <div className="row">
+                <div className="field-inline"><label>Município</label>
+                  <input type="text" style={{ width: 240 }} placeholder="preenchido pela busca" value={novaEmpresa.municipio}
+                    onChange={e => setNovaEmpresa(f => ({ ...f, municipio: e.target.value }))} />
+                </div>
+                <div className="field-inline"><label>UF</label>
+                  <input type="text" style={{ width: 60 }} maxLength={2} placeholder="BA" value={novaEmpresa.uf}
+                    onChange={e => setNovaEmpresa(f => ({ ...f, uf: e.target.value.toUpperCase() }))} />
+                </div>
+              </div>
+              <div className="row">
                 <button className="btn teal" onClick={salvarNovaEmpresa} disabled={salvandoEmpresa || !novaEmpresa.nome.trim()}>
                   {salvandoEmpresa ? (<><span className="spinner" /> Criando…</>) : 'Criar empresa'}
                 </button>
-                <button className="btn secondary" onClick={() => { setMostrarNovaEmpresa(false); setNovaEmpresa({ cnpj: '', nome: '' }); }}>Cancelar</button>
+                <button className="btn secondary" onClick={() => { setMostrarNovaEmpresa(false); setNovaEmpresa(EMPRESA_VAZIA); }}>Cancelar</button>
               </div>
             </div>
           )}
@@ -1850,7 +1872,10 @@ export default function Dashboard() {
                   {emp.id === currentEmpresaId && <span className="badge ok">ativa</span>}
                 </div>
                 <div className="name">{emp.nome}</div>
-                <div className="meta">conta banco fixa (padrão): {emp.conta_banco_fixa ?? '—'}</div>
+                <div className="meta">
+                  {emp.cnpj ? <>{emp.cnpj}<br /></> : null}
+                  {emp.municipio ? `${emp.municipio}${emp.uf ? '/' + emp.uf : ''}` : <>conta banco padrão: {emp.conta_banco_fixa ?? '—'}</>}
+                </div>
                 {isAdmin && (
                   <div className="card-actions">
                     <button className="icon-btn" title="Renomear" onClick={(ev) => { ev.stopPropagation(); renomearEmpresa(emp); }}><Pencil size={14} /></button>
@@ -1923,11 +1948,11 @@ export default function Dashboard() {
 
       {tab === 'extrato' && (
         <section className="panel">
-          <h2>Colar extrato bancário — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
+          <h2>Extrato — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
 
           <div className="card">
             <h3>Layout do banco</h3>
-            <p className="hint" style={{ marginBottom: 10 }}>Cole uma linha real, confira a prévia e ajuste as colunas (a 1ª coluna é a nº 1) antes de salvar.</p>
+            <p className="hint" style={{ marginBottom: 10 }}>Confira a prévia e ajuste as colunas antes de salvar.</p>
             <div className="row" style={{ marginTop: 0 }}>
               <label style={{ fontSize: 12.5 }}>Layout:</label>
               <select value={currentLayoutId || ''} onChange={e => setCurrentLayoutId(e.target.value)}>
@@ -1950,7 +1975,7 @@ export default function Dashboard() {
             {isAdmin && currentLayout && (
               <div key={currentLayoutId}>
                 <div className="field-group">
-                  <div className="field-group-label">Posição das colunas (a 1ª coluna é a nº 1)</div>
+                  <div className="field-group-label">Posição das colunas</div>
                   <div className="row" style={{ marginTop: 0 }}>
                     <div className="field-inline"><label>Separador</label>
                       <select defaultValue={currentLayout.separador} onChange={e => salvarLayout({ separador: e.target.value })}>
@@ -2012,7 +2037,7 @@ export default function Dashboard() {
             <>
               <div className="card">
                 <h3>Criar regra a partir do extrato</h3>
-                <p className="hint" style={{ marginBottom: 10 }}>Clique em palavras do histórico/detalhamento na tabela abaixo para montar a palavra-chave, escolha a conta e salve — sem sair desta tela.</p>
+                <p className="hint" style={{ marginBottom: 10 }}>Clique nas palavras do histórico na tabela abaixo para montar a palavra-chave, escolha a conta e salve.</p>
                 <div className="row" style={{ marginTop: 0 }}>
                   <label style={{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Palavra-chave:</label>
                   <input type="text" style={{ minWidth: 320 }} value={keywordDraft} onChange={e => setKeywordDraft(e.target.value)} placeholder="clique nas palavras abaixo…" />
@@ -2114,9 +2139,7 @@ export default function Dashboard() {
               </div>
 
               <p className="hint" style={{ margin: '10px 0 6px' }}>
-                💡 <strong>Clique no número da conta (colunas DEV. / CRED.)</strong> de qualquer linha para trocar a conta manualmente —
-                útil nos casos ambíguos: DARF (INSS × PIS × COFINS × IRPJ/CSLL), sócio (retirada × pró-labore), funcionário (salário × adiantamento), aplicação etc.
-                A escolha vale só para aquela linha e aparece como <span className="badge ok">✎ manual</span>.
+                Clique no número da conta (colunas DEV. / CRED.) para trocar a conta de uma linha — a escolha aparece como <span className="badge ok">✎ manual</span>.
               </p>
               <div className="row filtro-status" style={{ marginTop: 0, gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 <span style={{ fontSize: 12.5, color: 'var(--ink-soft)', fontWeight: 600 }}>Filtrar:</span>
@@ -2538,33 +2561,53 @@ export default function Dashboard() {
 
       {tab === 'regras' && (
         <section className="panel">
-          <h2>Regras de classificação — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
-          <p className="hint">Palavra-chave → código contábil. Quando mais de uma regra combina, prevalece a <strong>última da lista</strong> (use as setas ↑↓ para reordenar).</p>
-          <p className="hint" style={{ marginTop: 4 }}>💡 <strong>Conta p/ entradas (opcional):</strong> a mesma palavra-chave pode lançar em contas diferentes conforme a direção. Ex: "EMPRESA DO GRUPO X" com saídas na conta do <em>ativo</em> (C/C coligada) e entradas na conta do <em>passivo</em>; ou o nome do sócio com saídas em <em>retirada/C-C sócio</em> e, se preferir, entradas em outra conta. Vazio = mesma conta pros dois lados.</p>
-          <div className="stats">
-            <div className="stat">{regras.length} regras</div>
-            {regrasInvalidas.length > 0 && (
-              <div className="stat warn"><AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 5 }} />{regrasInvalidas.length} regra(s) com código que não existe no plano de contas</div>
-            )}
-            {regrasComSintetica.length > 0 && (
-              <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>⚠ {regrasComSintetica.length} regra(s) apontando pra conta Sintética</div>
+          <h2>Regras — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
+          <p className="hint">Palavra-chave → conta contábil. Quando mais de uma regra combina, vale a <strong>última da lista</strong>. A conta p/ entradas (opcional) é usada quando o dinheiro entra; vazia, vale a mesma conta dos dois lados.</p>
+          <div className="regras-toolbar">
+            <div className="search-hero" style={{ margin: 0, flex: '1 1 320px' }}>
+              <Search size={16} />
+              <input type="search" placeholder="Buscar regra por palavra-chave, conta ou descrição…"
+                value={regrasSearch} onChange={e => setRegrasSearch(e.target.value)} />
+            </div>
+            {isAdmin && (
+              <button className="btn teal" onClick={() => addRegra()}>
+                <Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova regra
+              </button>
             )}
           </div>
-          {isAdmin && (
-            <div className="row">
-              <button className="btn" onClick={addRegra}>+ Nova regra</button>
-            </div>
-          )}
-          <div className="table-wrap" style={{ marginTop: 14 }}>
-            <table>
-              <thead><tr><th style={{ width: 50 }}></th><th style={{ width: '24%' }}>PALAVRA-CHAVE</th><th style={{ width: '15%' }}>CONTA (SAÍDAS)</th><th style={{ width: '15%' }}>CONTA P/ ENTRADAS (OPCIONAL)</th><th style={{ width: '22%' }}>DESCRIÇÃO CONTA</th><th>OBSERVAÇÃO</th><th style={{ width: 34 }}></th></tr></thead>
+          <div className="stats" style={{ marginTop: 10 }}>
+            <div className="stat">{regras.length} regras</div>
+            {regrasInvalidas.length > 0 && (
+              <div className="stat warn"><AlertTriangle size={12} style={{ verticalAlign: -2, marginRight: 5 }} />{regrasInvalidas.length} com código fora do plano de contas</div>
+            )}
+            {regrasComSintetica.length > 0 && (
+              <div className="stat warn" style={{ background: '#F1E3E3', color: '#A33', borderColor: '#E0C4C4' }}>{regrasComSintetica.length} apontando pra conta Sintética</div>
+            )}
+          </div>
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table className="regras-table">
+              <thead><tr><th style={{ width: 50 }}></th><th style={{ width: '24%' }}>PALAVRA-CHAVE</th><th style={{ width: '15%' }}>CONTA (SAÍDAS)</th><th style={{ width: '15%' }}>CONTA P/ ENTRADAS</th><th style={{ width: '22%' }}>DESCRIÇÃO DA CONTA</th><th>OBSERVAÇÃO</th><th style={{ width: 34 }}></th></tr></thead>
               <tbody>
-                {regras.map((r, i) => (
+                {(() => {
+                  const q = regrasSearch.trim().toLowerCase();
+                  const visiveis = q ? regras.filter(r =>
+                    (r.palavra_chave || '').toLowerCase().includes(q) ||
+                    String(r.codigo || '').includes(q) ||
+                    String(r.codigo_recebimento || '').includes(q) ||
+                    (r.descricao || '').toLowerCase().includes(q) ||
+                    (findContaDesc(r.codigo) || '').toLowerCase().includes(q)
+                  ) : regras;
+                  if (q && visiveis.length === 0) {
+                    return <tr><td colSpan={7}><div className="empty-state" style={{ padding: '22px 10px' }}>Nenhuma regra encontrada para "{regrasSearch}".</div></td></tr>;
+                  }
+                  return visiveis.map(r => {
+                  const i = regras.indexOf(r);
+                  return (
                   <tr key={r.id} title={r.updated_by ? `editado por ${r.updated_by} em ${fmtData(r.updated_at)}` : ''}>
                     <td>
                       <div className="icon-btn-group">
-                        <button className="icon-btn" style={{ width: 24, height: 24 }} disabled={!isAdmin || i === 0} onClick={() => moveRegra(r, -1)}><ArrowUp size={13} /></button>
-                        <button className="icon-btn" style={{ width: 24, height: 24 }} disabled={!isAdmin || i === regras.length - 1} onClick={() => moveRegra(r, 1)}><ArrowDown size={13} /></button>
+                        <button className="icon-btn" style={{ width: 24, height: 24 }} title={q ? 'Limpe a busca para reordenar' : 'Subir na prioridade'} disabled={!isAdmin || i === 0 || !!q} onClick={() => moveRegra(r, -1)}><ArrowUp size={13} /></button>
+                        <button className="icon-btn" style={{ width: 24, height: 24 }} title={q ? 'Limpe a busca para reordenar' : 'Descer na prioridade'} disabled={!isAdmin || i === regras.length - 1 || !!q} onClick={() => moveRegra(r, 1)}><ArrowDown size={13} /></button>
                       </div>
                     </td>
                     <td><input className="cell-edit" defaultValue={r.palavra_chave} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'palavra_chave', e.target.value)} /></td>
@@ -2586,9 +2629,11 @@ export default function Dashboard() {
                           : findContaDesc(r.codigo)}
                     </td>
                     <td><input className="cell-edit" defaultValue={r.descricao || ''} readOnly={!isAdmin} onBlur={e => isAdmin && updateRegra(r, 'descricao', e.target.value)} /></td>
-                    <td>{isAdmin && <button className="icon-btn icon-btn-danger" onClick={() => deleteRegra(r)}><Trash2 size={14} /></button>}</td>
+                    <td>{isAdmin && <button className="icon-btn icon-btn-danger" title="Excluir regra" onClick={() => deleteRegra(r)}><Trash2 size={14} /></button>}</td>
                   </tr>
-                ))}
+                  );
+                  });
+                })()}
               </tbody>
             </table>
           </div>

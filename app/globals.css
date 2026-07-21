@@ -508,3 +508,9 @@ input.cell-edit:hover, input.cell-edit:focus{ border-color: var(--line); backgro
 /* --- plano de contas: contas sintéticas em destaque, como totalizadoras --- */
 tr.conta-sintetica > td{ background: var(--teal-bg); }
 tr.conta-sintetica .cell-edit{ font-weight: 700; color: var(--ink); }
+
+/* --- aba Regras: barra de busca + ações e tabela --- */
+.regras-toolbar{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top: 12px; }
+.regras-toolbar .btn{ flex-shrink: 0; }
+.regras-table td{ vertical-align: middle; }
+.regras-table tbody tr:hover > td{ background: #F8FAFC; }
