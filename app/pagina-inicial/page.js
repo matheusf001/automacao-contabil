@@ -24,7 +24,7 @@ function SkeletonTabela({ linhas = 4 }) {
 
 // Botão de "Escolher arquivo" estilizado (o input nativo fica escondido, mas continua acessível por teclado).
 // Também aceita arrastar-e-soltar (drag & drop): dá pra soltar o arquivo em cima da área toda.
-function FilePicker({ id, inputRef, accept, fileName, onFileChange }) {
+function FilePicker({ id, inputRef, accept, fileName, onFileChange, big, titulo, subtitulo, formatos }) {
   const [arrastando, setArrastando] = useState(false);
   function handleDrop(e) {
     e.preventDefault();
@@ -32,12 +32,31 @@ function FilePicker({ id, inputRef, accept, fileName, onFileChange }) {
     const f = e.dataTransfer?.files?.[0];
     if (f) onFileChange(f);
   }
+  const dragProps = {
+    onDragOver: e => { e.preventDefault(); setArrastando(true); },
+    onDragEnter: e => { e.preventDefault(); setArrastando(true); },
+    onDragLeave: e => { e.preventDefault(); setArrastando(false); },
+    onDrop: handleDrop,
+  };
+  // variante grande (área de soltar arquivo, como no preview)
+  if (big) {
+    return (
+      <div className={'dropzone' + (arrastando ? ' drag-over' : '')} {...dragProps}>
+        <input type="file" id={id} ref={inputRef} accept={accept} style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }}
+          onChange={e => onFileChange(e.target.files?.[0] || null)} />
+        <label htmlFor={id}>
+          <div className="dz-ico"><Upload size={24} /></div>
+          <div className={'dz-title' + (fileName ? ' has-file' : '')}>{fileName || titulo || 'Arraste o arquivo aqui ou clique para selecionar'}</div>
+          <div className="dz-sub">{fileName ? 'Arquivo carregado — clique para trocar' : subtitulo}</div>
+          {formatos && formatos.length > 0 && (
+            <div className="dz-formats">{formatos.map(f => <span key={f} className="dz-fmt">{f}</span>)}</div>
+          )}
+        </label>
+      </div>
+    );
+  }
   return (
-    <div className={'file-picker' + (arrastando ? ' drag-over' : '')}
-      onDragOver={e => { e.preventDefault(); setArrastando(true); }}
-      onDragEnter={e => { e.preventDefault(); setArrastando(true); }}
-      onDragLeave={e => { e.preventDefault(); setArrastando(false); }}
-      onDrop={handleDrop}>
+    <div className={'file-picker' + (arrastando ? ' drag-over' : '')} {...dragProps}>
       <input type="file" id={id} ref={inputRef} accept={accept}
         onChange={e => onFileChange(e.target.files?.[0] || null)} />
       <label htmlFor={id} className="file-picker-btn"><Upload size={14} />Escolher arquivo</label>
@@ -1893,6 +1912,21 @@ export default function PaginaInicial() {
           <h1>{tab === 'inicio' ? 'Página Inicial' : TAB_META[tab]?.label}</h1>
           <p>{TAB_DESC[tab]}</p>
         </div>
+        {tab === 'empresas' && isAdmin && (
+          <button className="btn teal" onClick={() => setMostrarNovaEmpresa(v => !v)}>
+            <Plus size={15} style={{ marginRight: 6, verticalAlign: -2 }} />Nova empresa
+          </button>
+        )}
+        {tab === 'regras' && isAdmin && (
+          <button className="btn teal" onClick={() => addRegra()}>
+            <Plus size={15} style={{ marginRight: 6, verticalAlign: -2 }} />Nova regra
+          </button>
+        )}
+        {tab === 'contas' && isAdmin && (
+          <button className="btn teal" onClick={() => addContaManual()}>
+            <Plus size={15} style={{ marginRight: 6, verticalAlign: -2 }} />Nova conta
+          </button>
+        )}
       </div>
 
       {tab === 'inicio' && (() => {
@@ -2009,14 +2043,9 @@ export default function PaginaInicial() {
         <section className="panel">
           <div className={isAdmin ? 'empresas-layout' : ''}>
           <div>
-          <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
-            <div>
-              <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} empresas cadastradas, cada uma com plano de contas e regras próprios.
-                {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
-              </p>
-            </div>
-            {isAdmin && <button className="btn secondary" onClick={() => setMostrarNovaEmpresa(v => !v)}><Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova empresa</button>}
-          </div>
+          <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} empresas cadastradas, cada uma com plano de contas e regras próprios.
+            {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
+          </p>
 
           {isAdmin && mostrarNovaEmpresa && (
             <div className="card destaque" style={{ marginTop: 14 }}>
@@ -2054,66 +2083,49 @@ export default function PaginaInicial() {
             </div>
           )}
 
-          <div className="search-hero">
-            <Search size={18} />
-            <input type="search" placeholder="Buscar empresa pelo nome…" autoFocus
-              value={empresaListSearch} onChange={e => setEmpresaListSearch(e.target.value)} />
+          <div className="row" style={{ margin: '16px 0 0' }}>
+            <div className="search-box">
+              <Search size={15} />
+              <input type="search" placeholder="Buscar por nome ou CNPJ…"
+                value={empresaListSearch} onChange={e => setEmpresaListSearch(e.target.value)} />
+            </div>
           </div>
 
           {(() => {
             const busca = empresaListSearch.trim().toLowerCase();
-            const filtradas = busca ? empresas.filter(emp => emp.nome.toLowerCase().includes(busca)) : [];
-            const recentesList = recentes.map(id => empresas.find(e => e.id === id)).filter(Boolean);
-
-            const renderCard = (emp) => (
-              <div key={emp.id} className={'empresa-card' + (emp.id === currentEmpresaId ? ' active' : '')}
-                onClick={() => { selecionarEmpresa(emp.id); setEmpresaListSearch(''); }}
-                title="Clique para usar esta empresa">
-                <div className="card-top">
-                  <Building2 size={16} className="card-ico" />
-                  {emp.id === currentEmpresaId && <span className="badge ok">ativa</span>}
-                </div>
-                <div className="name">{emp.nome}</div>
-                <div className="meta">
-                  {emp.cnpj ? <>{emp.cnpj}<br /></> : null}
-                  {emp.municipio ? `${emp.municipio}${emp.uf ? '/' + emp.uf : ''}` : <>conta banco padrão: {emp.conta_banco_fixa ?? '—'}</>}
-                </div>
-                {isAdmin && (
-                  <div className="card-actions">
-                    <button className="icon-btn" title="Renomear" onClick={(ev) => { ev.stopPropagation(); renomearEmpresa(emp); }}><Pencil size={14} /></button>
-                    <button className="icon-btn icon-btn-danger" title="Excluir" onClick={(ev) => { ev.stopPropagation(); excluirEmpresa(emp); }}><Trash2 size={14} /></button>
-                  </div>
-                )}
-              </div>
-            );
-
-            if (busca) {
-              return (
-                <>
-                  <div className="section-label">{filtradas.length} resultado(s) para "{empresaListSearch}"</div>
-                  {filtradas.length > 0
-                    ? <div className="empresa-grid">{filtradas.map(renderCard)}</div>
-                    : <div className="empty-state">Nenhuma empresa encontrada. {isAdmin && 'Use o botão "Nova empresa" para cadastrar.'}</div>}
-                </>
-              );
+            const buscaDigitos = busca.replace(/\D/g, '');
+            const filtradas = busca ? empresas.filter(emp =>
+              emp.nome.toLowerCase().includes(busca) ||
+              (buscaDigitos && (emp.cnpj || '').replace(/\D/g, '').includes(buscaDigitos))
+            ) : empresas;
+            if (filtradas.length === 0) {
+              return <div className="empty-state">Nenhuma empresa encontrada.{isAdmin && ' Use o botão "Nova empresa" para cadastrar.'}</div>;
             }
             return (
-              <>
-                {recentesList.length > 0 && (
-                  <>
-                    <div className="section-label"><Clock size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Seleção rápida — usadas recentemente</div>
-                    <div className="empresa-grid">{recentesList.map(renderCard)}</div>
-                  </>
-                )}
-                {recentesList.length === 0 && (
-                  <div className="empty-state" style={{ padding: '30px 20px' }}>Use a busca acima para encontrar uma empresa. As que você usar vão aparecer aqui como atalho.</div>
-                )}
-                <button className="btn secondary" style={{ marginTop: 18 }} onClick={() => setVerTodas(v => !v)}>
-                  {verTodas ? <ChevronUp size={14} style={{ marginRight: 5, verticalAlign: -2 }} /> : <ChevronDown size={14} style={{ marginRight: 5, verticalAlign: -2 }} />}
-                  {verTodas ? 'Esconder lista completa' : `Ver todas as ${empresas.length} empresas`}
-                </button>
-                {verTodas && <div className="empresa-grid" style={{ marginTop: 14 }}>{empresas.map(renderCard)}</div>}
-              </>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>EMPRESA</th><th>CNPJ</th><th>MUNICÍPIO</th><th>STATUS</th><th style={{ width: 150 }}></th></tr></thead>
+                  <tbody>
+                    {filtradas.map(emp => (
+                      <tr key={emp.id}>
+                        <td><strong>{emp.nome}</strong></td>
+                        <td className="mono">{emp.cnpj || '—'}</td>
+                        <td>{emp.municipio ? `${emp.municipio}${emp.uf ? '/' + emp.uf : ''}` : '—'}</td>
+                        <td>{emp.id === currentEmpresaId ? <span className="badge ok">em uso</span> : <span className="badge off">disponível</span>}</td>
+                        <td className="num">
+                          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'center' }}>
+                            {emp.id !== currentEmpresaId && (
+                              <button className="btn secondary sm" title="Trabalhar com esta empresa" onClick={() => selecionarEmpresa(emp.id)}>Usar</button>
+                            )}
+                            {isAdmin && <button className="icon-btn" title="Renomear" onClick={() => renomearEmpresa(emp)}><Pencil size={14} /></button>}
+                            {isAdmin && <button className="icon-btn icon-btn-danger" title="Excluir" onClick={() => excluirEmpresa(emp)}><Trash2 size={14} /></button>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             );
           })()}
 
@@ -2217,15 +2229,15 @@ export default function PaginaInicial() {
             )}
           </div>
 
-          <p className="hint">Cole as linhas do extrato conforme o layout selecionado, ou envie o arquivo direto do banco (.ofx, Excel, CSV ou TXT). Só tem o extrato em <strong>PDF</strong>? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--teal)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui.</p>
-          <div className="row" style={{ marginTop: 0 }}>
-            <FilePicker id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
-              fileName={fileNameExtrato}
-              onFileChange={f => { setFileNameExtrato(f?.name || ''); if (f) handleExtratoFileUpload(f); }} />
-            <span style={{ fontSize: 12, color: 'var(--ink-soft)' }}>ou cole manualmente abaixo</span>
-          </div>
+          <FilePicker big id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
+            fileName={fileNameExtrato}
+            titulo="Arraste o extrato aqui ou clique para selecionar"
+            subtitulo="Arquivo direto do banco — conta corrente, conta garantida e aplicações"
+            formatos={['OFX', 'XLS', 'XLSX', 'CSV', 'TXT']}
+            onFileChange={f => { setFileNameExtrato(f?.name || ''); if (f) handleExtratoFileUpload(f); }} />
+          <p className="hint" style={{ margin: '12px 0 6px' }}>Só tem o extrato em <strong>PDF</strong>? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui — ou cole as linhas do extrato manualmente abaixo, conforme o layout selecionado.</p>
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); ofxModeRef.current = false; setConfirmado(false); existentesCacheRef.current = null; }}
-            placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} />
+            placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} style={{ minHeight: 90 }} />
           <div className="row">
             <button className="btn teal" onClick={() => processarExtrato()} disabled={processando}>
               {processando ? (<><span className="spinner" /> Processando…</>) : 'Processar extrato'}
@@ -2472,6 +2484,34 @@ export default function PaginaInicial() {
             e a IA usa essa informação pra sugerir a conta contábil certa. Também serve como consulta rápida.
           </p>
 
+          {relatorios.length > 0 && (() => {
+            const pag = relatorios.filter(r => r.tipo === 'pagamentos');
+            const rec = relatorios.filter(r => r.tipo === 'recebimentos');
+            const itens = relatorios.reduce((s, r) => s + (r.total_itens || 0), 0);
+            return (
+              <div className="dash-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', marginBottom: 16 }}>
+                <div className="kpi-card" style={{ cursor: 'default' }}>
+                  <div className="kpi-top"><div className="kpi-ico red"><ArrowDown size={19} /></div></div>
+                  <div className="kpi-value sm">{pag.length}</div>
+                  <div className="kpi-label">Relatórios de pagamentos</div>
+                  <div className="kpi-sub">saídas enviadas para o cruzamento</div>
+                </div>
+                <div className="kpi-card" style={{ cursor: 'default' }}>
+                  <div className="kpi-top"><div className="kpi-ico green"><ArrowUp size={19} /></div></div>
+                  <div className="kpi-value sm">{rec.length}</div>
+                  <div className="kpi-label">Relatórios de recebimentos</div>
+                  <div className="kpi-sub">entradas enviadas para o cruzamento</div>
+                </div>
+                <div className="kpi-card" style={{ cursor: 'default' }}>
+                  <div className="kpi-top"><div className="kpi-ico"><FileSpreadsheet size={19} /></div></div>
+                  <div className="kpi-value sm">{itens}</div>
+                  <div className="kpi-label">Itens no total</div>
+                  <div className="kpi-sub">linhas disponíveis para consulta</div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="card">
             <h3>Enviar novo relatório</h3>
             <div className="row" style={{ marginTop: 8 }}>
@@ -2630,6 +2670,29 @@ export default function PaginaInicial() {
         <section className="panel">
           <p className="hint">Envie o PDF gerado pelo sistema de folha: o <strong>Relatório de Líquidos</strong> (nome e valor líquido de cada funcionário) ou o <strong>Extrato Mensal</strong> (completo, com proventos, descontos e férias). O site reconhece os funcionários e guarda os valores — é o que permite identificar no extrato bancário os pagamentos de salário, férias e rescisão, tanto Pix individual quanto pagamento em lote (SISPAG).</p>
 
+          {folhas.length > 0 && (
+            <div className="dash-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', marginBottom: 16 }}>
+              <div className="kpi-card" style={{ cursor: 'default' }}>
+                <div className="kpi-top"><div className="kpi-ico green"><Banknote size={19} /></div></div>
+                <div className="kpi-value sm">R$ {Number(folhas[0].total_liquido || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+                <div className="kpi-label">Líquido da última folha</div>
+                <div className="kpi-sub">competência {folhas[0].competencia}</div>
+              </div>
+              <div className="kpi-card" style={{ cursor: 'default' }}>
+                <div className="kpi-top"><div className="kpi-ico"><Users size={19} /></div></div>
+                <div className="kpi-value sm">{funcionarios.length}</div>
+                <div className="kpi-label">Funcionários</div>
+                <div className="kpi-sub">reconhecidos nos PDFs enviados</div>
+              </div>
+              <div className="kpi-card" style={{ cursor: 'default' }}>
+                <div className="kpi-top"><div className="kpi-ico violet"><FileText size={19} /></div></div>
+                <div className="kpi-value sm">{folhas.length}</div>
+                <div className="kpi-label">Folhas salvas</div>
+                <div className="kpi-sub">competências importadas</div>
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <h3>Enviar folha (PDF)</h3>
             <div className="row" style={{ marginTop: 8 }}>
@@ -2766,11 +2829,6 @@ export default function PaginaInicial() {
               <input type="search" placeholder="Buscar regra por palavra-chave, conta ou descrição…"
                 value={regrasSearch} onChange={e => setRegrasSearch(e.target.value)} />
             </div>
-            {isAdmin && (
-              <button className="btn teal" onClick={() => addRegra()}>
-                <Plus size={14} style={{ marginRight: 5, verticalAlign: -2 }} />Nova regra
-              </button>
-            )}
           </div>
           <div className="stats" style={{ marginTop: 10 }}>
             <div className="stat">{regras.length} regras</div>
@@ -2854,7 +2912,6 @@ export default function PaginaInicial() {
               {Object.values(GRUPOS_POR_NIVEL1).map(g => <option key={g} value={g}>{g}</option>)}
             </select>
             <button className="btn secondary" onClick={() => openPicker(() => {})}><Search size={13} style={{marginRight:5,verticalAlign:-2}}/>Abrir em janela de busca (F4)</button>
-            {isAdmin && <button className="btn" onClick={addContaManual}>+ Nova conta manual</button>}
           </div>
           <div className="table-wrap" style={{ marginTop: 14 }}>
             <table>
@@ -2896,6 +2953,26 @@ export default function PaginaInicial() {
             <div className="empty-state">Processe um extrato na aba EXTRATO primeiro.</div>
           ) : (
             <>
+              {(() => {
+                const prontos = processedRows.filter(r => r.status === 'automatico').length;
+                const pend = processedRows.filter(r => r.status === 'sem match').length;
+                const dups = processedRows.filter(r => r.status === 'duplicado').length;
+                return (
+                  <>
+                    <div className="steps">
+                      <div className="step done"><div className="step-n">✓</div><div className="step-t">Extrato processado</div></div>
+                      <div className={'step ' + (prontos > 0 ? 'done' : 'now')}><div className="step-n">{prontos > 0 ? '✓' : '2'}</div><div className="step-t">Lançamentos classificados</div></div>
+                      <div className={'step ' + (pend === 0 ? 'done' : 'now')}><div className="step-n">{pend === 0 ? '✓' : '3'}</div><div className="step-t">Revisar pendências</div></div>
+                      <div className={'step ' + (pend === 0 && prontos > 0 ? 'now' : '')}><div className="step-n">4</div><div className="step-t">Gerar arquivo</div></div>
+                    </div>
+                    <div className="dash-grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', marginBottom: 16 }}>
+                      <div className="kpi-card" style={{ cursor: 'default' }}><div className="kpi-value">{prontos}</div><div className="kpi-label">Prontos p/ exportar</div><div className="kpi-sub">classificados e conferidos</div></div>
+                      <div className="kpi-card" style={{ cursor: 'default' }}><div className="kpi-value" style={{ color: 'var(--amber-vivid)' }}>{pend}</div><div className="kpi-label">Pendências</div><div className="kpi-sub">precisam de conta manual</div></div>
+                      <div className="kpi-card" style={{ cursor: 'default' }}><div className="kpi-value" style={{ color: 'var(--red)' }}>{dups}</div><div className="kpi-label">Duplicados</div><div className="kpi-sub">não entram no arquivo</div></div>
+                    </div>
+                  </>
+                );
+              })()}
               <div className="row" style={{ marginTop: 0 }}>
                 <button className="btn teal" onClick={() => exportarImportacao(false, 'txt')}>Exportar .txt — Domínio</button>
                 <button className="btn secondary" onClick={() => exportarImportacao(true, 'txt')}>Exportar só classificados (.txt)</button>
@@ -2933,26 +3010,20 @@ export default function PaginaInicial() {
                 <div className="stat ok">{historico.reduce((s, h) => s + (h.total_classificados || 0), 0)} lançamentos classificados no total</div>
                 <div className="stat warn">{historico.reduce((s, h) => s + (h.total_sem_match || 0), 0)} sem correspondência no total</div>
               </div>
-              <div className="table-wrap" style={{ marginTop: 14 }}><table>
-                <thead><tr><th>DATA/HORA</th><th>LAYOUT</th><th className="num">CONTA</th><th className="num">TOTAL</th><th className="num">CLASSIF.</th><th className="num">SEM MATCH</th><th className="num">DUPLICADOS</th><th>POR</th></tr></thead>
-                <tbody>
-                  {historico.map(h => {
-                    const layoutNome = layouts.find(l => String(l.id) === String(h.layout_id))?.nome || '—';
-                    return (
-                      <tr key={h.id}>
-                        <td className="mono">{fmtData(h.processado_em)}</td>
-                        <td>{layoutNome}</td>
-                        <td className="num">{h.conta_codigo}</td>
-                        <td className="num">{h.total_lancamentos}</td>
-                        <td className="num">{h.total_classificados}</td>
-                        <td className="num">{h.total_sem_match}</td>
-                        <td className="num">{h.total_duplicados}</td>
-                        <td className="mono">{h.processado_por}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table></div>
+              <div className="timeline" style={{ marginTop: 22 }}>
+                {historico.map(h => {
+                  const layoutNome = layouts.find(l => String(l.id) === String(h.layout_id))?.nome || '—';
+                  return (
+                    <div key={h.id} className={'tl-item ' + ((h.total_sem_match || 0) > 0 ? 'warn' : 'ok')}>
+                      <div className="tl-title">Importação confirmada — {h.total_lancamentos} lançamento(s)</div>
+                      <div className="tl-meta">{fmtData(h.processado_em)} · {h.processado_por}</div>
+                      <div className="tl-desc">
+                        {h.total_classificados} classificados · {h.total_sem_match} sem correspondência · {h.total_duplicados} duplicados · layout {layoutNome} · conta {h.conta_codigo}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </>
           )}
         </section>
@@ -3059,12 +3130,19 @@ export default function PaginaInicial() {
               <SkeletonTabela linhas={5} />
             ) : (
               <div className="table-wrap"><table>
-                <thead><tr><th>USUÁRIO</th><th>E-MAIL</th><th>PAPEL</th><th>ACESSO</th><th>ÚLTIMO LOGIN</th><th>STATUS</th><th style={{ width: 130 }}>AÇÕES</th></tr></thead>
+                <thead><tr><th>USUÁRIO</th><th>PAPEL</th><th>ACESSO</th><th>ÚLTIMO LOGIN</th><th>STATUS</th><th style={{ width: 130 }}>AÇÕES</th></tr></thead>
                 <tbody>
-                  {usuarios.map(u => (
+                  {usuarios.map((u, idx) => (
                     <tr key={u.user_id} style={u.ativo ? {} : { opacity: 0.55 }}>
-                      <td><strong>{u.username || '—'}</strong>{u.sou_eu && <span className="pill" style={{ marginLeft: 6 }}>você</span>}</td>
-                      <td className="mono" style={{ fontSize: 11.5 }}>{u.email || '—'}</td>
+                      <td>
+                        <div className="u-cell">
+                          <div className={'u-avatar ' + ['a', 'b', 'c', 'd'][idx % 4]}>{(u.username || u.email || '?').slice(0, 2).toUpperCase()}</div>
+                          <div>
+                            <div className="u-name">{u.username || '—'}{u.sou_eu && <span className="pill" style={{ marginLeft: 6 }}>você</span>}</div>
+                            <div className="u-mail">{u.email || 'sem e-mail'}</div>
+                          </div>
+                        </div>
+                      </td>
                       <td>{u.role === 'admin' ? <span className="badge ia">admin</span> : <span className="badge ok">operador</span>}</td>
                       <td style={{ fontSize: 12 }}>
                         {u.role === 'admin' || u.acesso_todas
