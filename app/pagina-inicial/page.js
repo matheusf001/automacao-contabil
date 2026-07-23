@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
-import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle, Banknote } from 'lucide-react';
+import { Check, Pencil, Trash2, Search, Plus, ArrowUp, ArrowDown, X, Sparkles, Clock, Building2, ChevronDown, ChevronUp, ChevronRight, FileSpreadsheet, FileText, BarChart3, Settings, BookOpen, Upload, History, Users, KeyRound, UserX, UserCheck, Crown, Eye, Scale, CreditCard, FolderOpen, AlertTriangle, Banknote, LayoutDashboard, Menu, LogOut } from 'lucide-react';
 import { parsePlanoFile, parsePlanoPaste, parseExtrato, classificar, downloadFile, downloadFileAnsi, tokenizarTexto, sugerirConta, similaridadeJaccard } from '@/lib/planoParser';
 import { lerArquivoEmLinhas, detectarColunas, extrairItens, construirIndiceRelatorio, cruzarComRelatorio, fmtISOparaBR, normalizarDataISO } from '@/lib/relatorioParser';
 import ContaPickerModal from '@/components/ContaPickerModal';
@@ -103,19 +103,27 @@ function EmpresaPicker({ empresas, currentEmpresaId, onSelect }) {
   );
 }
 
-const TABS = ['empresas', 'extrato', 'relatorios', 'folha', 'regras', 'contas', 'importacao', 'historico', 'usuarios', 'assinantes'];
 const TAB_META = {
-  empresas:   { num: '01', label: 'Empresas',        Icon: Building2 },
-  extrato:    { num: '02', label: 'Extrato',         Icon: FileText },
-  relatorios: { num: '03', label: 'Relatórios',      Icon: BarChart3 },
-  folha:      { num: '04', label: 'Folha',           Icon: Banknote },
-  regras:     { num: '05', label: 'Regras',          Icon: Settings },
-  contas:     { num: '06', label: 'Plano de Contas', Icon: BookOpen },
-  importacao: { num: '07', label: 'Importação',      Icon: Upload },
-  historico:  { num: '08', label: 'Histórico',       Icon: History },
-  usuarios:   { num: '09', label: 'Usuários',        Icon: Users },
-  assinantes: { num: '10', label: 'Assinantes',      Icon: Crown },
+  inicio:     { label: 'Página Inicial',  Icon: LayoutDashboard },
+  empresas:   { label: 'Empresas',        Icon: Building2 },
+  extrato:    { label: 'Extrato',         Icon: FileText },
+  relatorios: { label: 'Relatórios',      Icon: BarChart3 },
+  folha:      { label: 'Folha',           Icon: Banknote },
+  regras:     { label: 'Regras',          Icon: Settings },
+  contas:     { label: 'Plano de Contas', Icon: BookOpen },
+  importacao: { label: 'Importação',      Icon: Upload },
+  historico:  { label: 'Histórico',       Icon: History },
+  usuarios:   { label: 'Usuários',        Icon: Users },
+  assinantes: { label: 'Assinantes',      Icon: Crown },
 };
+
+// grupos do menu lateral (mesma ordem do preview aprovado)
+const MENU_SECOES = [
+  { titulo: 'Principal', tabs: ['inicio', 'empresas'] },
+  { titulo: 'Movimento', tabs: ['extrato', 'relatorios', 'folha'] },
+  { titulo: 'Automação', tabs: ['regras', 'contas', 'importacao'] },
+  { titulo: 'Sistema',   tabs: ['historico', 'usuarios', 'assinantes'] },
+];
 
 function fingerprintOf(data, valor, historico) {
   return `${data}|${valor}|${historico}`.trim().toUpperCase().replace(/\s+/g, ' ');
@@ -147,7 +155,7 @@ function compararClassificacao(a, b) {
   return 0;
 }
 
-export default function Dashboard() {
+export default function PaginaInicial() {
   const router = useRouter();
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [userEmail, setUserEmail] = useState('');
@@ -159,7 +167,9 @@ export default function Dashboard() {
   const empresasTodasRef = useRef([]);                       // lista completa (super vê todos os escritórios)
   const isAdmin = role === 'admin' || souSuper;
 
-  const [tab, setTab] = useState('empresas');
+  const [tab, setTab] = useState('inicio');
+  const [menuRecolhido, setMenuRecolhido] = useState(false);   // sidebar só com ícones (telas grandes)
+  const [menuMobileAberto, setMenuMobileAberto] = useState(false); // sidebar deslizante (telas pequenas)
   const [empresas, setEmpresas] = useState([]);
   const [currentEmpresaId, setCurrentEmpresaId] = useState(null);
   const [planoContas, setPlanoContas] = useState([]);
@@ -613,7 +623,27 @@ export default function Dashboard() {
   // ---------- EMPRESAS RECENTES (guardado no navegador) ----------
   useEffect(() => {
     try { setRecentes(JSON.parse(localStorage.getItem('ac_empresas_recentes') || '[]')); } catch { /* ignora */ }
+    try { setMenuRecolhido(localStorage.getItem('ac_menu_recolhido') === '1'); } catch { /* ignora */ }
   }, []);
+
+  // Botão dos 3 tracinhos: em tela grande recolhe/expande a sidebar (fica só
+  // com os ícones); em tela pequena abre/fecha o menu deslizante.
+  function alternarMenu() {
+    if (typeof window !== 'undefined' && window.innerWidth <= 1020) {
+      setMenuMobileAberto(v => !v);
+      return;
+    }
+    setMenuRecolhido(v => {
+      const novo = !v;
+      try { localStorage.setItem('ac_menu_recolhido', novo ? '1' : '0'); } catch { /* ignora */ }
+      return novo;
+    });
+  }
+
+  function trocarTab(t) {
+    setTab(t);
+    setMenuMobileAberto(false); // no celular, fecha o menu ao escolher uma aba
+  }
 
   function registrarRecente(id) {
     setRecentes(prev => {
@@ -1625,6 +1655,22 @@ export default function Dashboard() {
   if (checkingAuth) return <div className="center-loading">verificando sessão…</div>;
 
   const empresaAtiva = empresas.find(e => e.id === currentEmpresaId);
+  const pendenciasExtrato = processedRows.filter(r => r.status === 'sem match').length;
+
+  // descrição exibida no cabeçalho de cada página/aba
+  const TAB_DESC = {
+    inicio: empresaAtiva ? <>Visão geral do escritório — trabalhando em <strong>{empresaAtiva.nome}</strong>.</> : 'Visão geral do escritório.',
+    empresas: 'Gerencie as empresas atendidas pelo escritório.',
+    extrato: <>Importe o extrato bancário e deixe as regras e a IA classificarem os lançamentos de <strong>{empresaAtiva?.nome || '—'}</strong>.</>,
+    relatorios: <>Envie os relatórios de pagamentos e recebimentos de <strong>{empresaAtiva?.nome || '—'}</strong> — eles são cruzados com o extrato por data e valor.</>,
+    folha: <>Envie o PDF da folha de pagamento de <strong>{empresaAtiva?.nome || '—'}</strong> para reconhecer salários, férias e rescisões no extrato.</>,
+    regras: <>Regras de classificação aplicadas automaticamente aos lançamentos de <strong>{empresaAtiva?.nome || '—'}</strong>.</>,
+    contas: <>Plano de contas de <strong>{empresaAtiva?.nome || '—'}</strong> — contas sintéticas totalizam, analíticas recebem lançamento.</>,
+    importacao: 'Gere o arquivo de importação com os lançamentos classificados, no layout do Domínio.',
+    historico: <>Processamentos e importações já confirmados de <strong>{empresaAtiva?.nome || '—'}</strong>.</>,
+    usuarios: 'Controle de acesso da equipe do escritório.',
+    assinantes: 'Gestão dos escritórios assinantes do sistema.',
+  };
   const contasFiltradas = planoContas.filter(c => {
     const f = contasSearch.toLowerCase();
     const passaBusca = !f || String(c.codigo).includes(f) || (c.descricao || '').toLowerCase().includes(f);
@@ -1633,7 +1679,7 @@ export default function Dashboard() {
   }).slice(0, 500);
 
   return (
-    <div className="app">
+    <div className="shell">
       {pickerOnSelect && (
         <ContaPickerModal
           contas={planoContas}
@@ -1764,33 +1810,73 @@ export default function Dashboard() {
         {planoContas.map(c => <option key={c.id} value={`${c.codigo} — ${c.descricao}${c.tipo === 'S' ? ' [SINTÉTICA]' : ''}`} />)}
       </datalist>
 
-      <header className="top">
-        <div className="top-inner">
-          <img src="/logo.png" alt="AutoContax" title="AutoContax" className="brand-logo" />
-          <div className="top-divider" />
-          <EmpresaPicker empresas={empresas} currentEmpresaId={currentEmpresaId} onSelect={selecionarEmpresa} />
-          <div className="user-block">
-            <div className="user-info">
-              <div className="user-email">{userEmail}</div>
-              <div className="user-role">{isAdmin ? 'Administrador' : 'Operador'} · <a href="#" onClick={(e) => { e.preventDefault(); handleLogout(); }}>Sair</a></div>
-            </div>
-            <div className="avatar">{(userEmail || '?').slice(0, 2).toUpperCase()}</div>
+      {/* ===== MENU LATERAL (sidebar) ===== */}
+      <aside className={'sidebar' + (menuRecolhido ? ' collapsed' : '') + (menuMobileAberto ? ' mobile-open' : '')}>
+        <div className="sb-head">
+          <div className="sb-logo-mini">A</div>
+          <div className="sb-title">
+            <div className="name">AutoContax</div>
+            <div className="desc">Automação contábil</div>
           </div>
+        </div>
+        <nav className="sb-nav">
+          {MENU_SECOES.map(sec => {
+            const visiveis = sec.tabs.filter(t => (t === 'usuarios' ? isAdmin : t === 'assinantes' ? souSuper : true));
+            if (visiveis.length === 0) return null;
+            return (
+              <div key={sec.titulo}>
+                <div className="sb-section">{sec.titulo}</div>
+                {visiveis.map(t => {
+                  const { label, Icon } = TAB_META[t];
+                  return (
+                    <button key={t} className={'sb-item' + (tab === t ? ' active' : '')} title={label} onClick={() => trocarTab(t)}>
+                      <Icon size={17} />
+                      <span className="sb-label">{label}</span>
+                      {t === 'empresas' && empresas.length > 0 && <span className="sb-badge">{empresas.length}</span>}
+                      {t === 'extrato' && pendenciasExtrato > 0 && <span className="sb-badge warn">{pendenciasExtrato}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
+        <div className="sb-foot">
+          <div className="sb-user">
+            <div className="sb-avatar">{(userEmail || '?').slice(0, 2).toUpperCase()}</div>
+            <div className="info">
+              <div className="email">{userEmail}</div>
+              <div className="role">{isAdmin ? 'Administrador' : 'Operador'}</div>
+            </div>
+            <button className="sb-logout" title="Sair" onClick={() => handleLogout()}><LogOut size={16} /></button>
+          </div>
+        </div>
+      </aside>
+      {menuMobileAberto && <div className="sidebar-backdrop" onClick={() => setMenuMobileAberto(false)} />}
+
+      {/* ===== ÁREA PRINCIPAL ===== */}
+      <div className="main-area">
+      <header className="topbar">
+        <button className="hamburger" title={menuRecolhido ? 'Expandir menu' : 'Recolher menu'} onClick={() => alternarMenu()}>
+          <Menu size={17} />
+        </button>
+        <div className="breadcrumb">
+          <span className="crumb-root">AutoContax</span>
+          <ChevronRight size={13} />
+          <span className="crumb-here">{TAB_META[tab]?.label || ''}</span>
+        </div>
+        <div className="topbar-spacer" />
+        <EmpresaPicker empresas={empresas} currentEmpresaId={currentEmpresaId} onSelect={selecionarEmpresa} />
+        <div className="user-block">
+          <div className="user-info">
+            <div className="user-email">{userEmail}</div>
+            <div className="user-role">{isAdmin ? 'Administrador' : 'Operador'} · <a href="#" onClick={(e) => { e.preventDefault(); handleLogout(); }}>Sair</a></div>
+          </div>
+          <div className="avatar">{(userEmail || '?').slice(0, 2).toUpperCase()}</div>
         </div>
       </header>
 
-      <nav className="tabs">
-        <div className="tabs-inner">
-          {TABS.filter(t => (t === 'usuarios' ? isAdmin : t === 'assinantes' ? souSuper : true)).map(t => {
-            const { num, label, Icon } = TAB_META[t];
-            return (
-              <button key={t} className={'tab-btn' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}>
-                <Icon size={15} /><span className="tab-num">{num}</span>{label}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+      <div className="app">
 
       {souSuper && escritorioVisao && (
         <div className="suporte-banner">
@@ -1802,13 +1888,129 @@ export default function Dashboard() {
       )}
       <div key={tab} className="fade-in">
 
+      <div className="page-head">
+        <div className="ph-text">
+          <h1>{tab === 'inicio' ? 'Página Inicial' : TAB_META[tab]?.label}</h1>
+          <p>{TAB_DESC[tab]}</p>
+        </div>
+      </div>
+
+      {tab === 'inicio' && (() => {
+        const totalLanc = processedRows.length;
+        const classif = processedRows.filter(r => r.status === 'automatico').length;
+        const manuais = processedRows.filter(r => r.status === 'automatico' && r.origem === 'manual').length;
+        const duplicados = processedRows.filter(r => r.status === 'duplicado').length;
+        const pct = (n) => totalLanc ? Math.max(4, Math.round((n / totalLanc) * 100)) : 0;
+        const grupos = {};
+        planoContas.forEach(c => { const g = grupoOf(c.classificacao); if (g !== '—') grupos[g] = (grupos[g] || 0) + 1; });
+        const gruposArr = Object.entries(grupos);
+        const maxGrupo = Math.max(1, ...gruposArr.map(([, n]) => n));
+        return (
+          <>
+            <div className="dash-grid">
+              <button className="kpi-card" onClick={() => trocarTab('empresas')}>
+                <div className="kpi-top"><div className="kpi-ico"><Building2 size={19} /></div></div>
+                <div className="kpi-value">{empresas.length}</div>
+                <div className="kpi-label">Empresas</div>
+                <div className="kpi-sub">cadastradas no escritório</div>
+              </button>
+              <button className="kpi-card" onClick={() => trocarTab('extrato')}>
+                <div className="kpi-top"><div className="kpi-ico violet"><FileText size={19} /></div></div>
+                <div className="kpi-value">{totalLanc}</div>
+                <div className="kpi-label">Lançamentos</div>
+                <div className="kpi-sub">na sessão atual</div>
+              </button>
+              <button className="kpi-card" onClick={() => trocarTab('extrato')}>
+                <div className="kpi-top"><div className="kpi-ico green"><Check size={19} /></div></div>
+                <div className="kpi-value">{classif}</div>
+                <div className="kpi-label">Classificados</div>
+                <div className="kpi-sub">pelas regras, pela IA e por você</div>
+              </button>
+              <button className="kpi-card" onClick={() => trocarTab('extrato')}>
+                <div className="kpi-top"><div className="kpi-ico amber"><AlertTriangle size={19} /></div></div>
+                <div className="kpi-value">{pendenciasExtrato}</div>
+                <div className="kpi-label">Pendências</div>
+                <div className="kpi-sub">sem correspondência</div>
+              </button>
+              <button className="kpi-card" onClick={() => trocarTab('regras')}>
+                <div className="kpi-top"><div className="kpi-ico"><Settings size={19} /></div></div>
+                <div className="kpi-value">{regras.length}</div>
+                <div className="kpi-label">Regras</div>
+                <div className="kpi-sub">da empresa selecionada</div>
+              </button>
+              <button className="kpi-card" onClick={() => trocarTab('contas')}>
+                <div className="kpi-top"><div className="kpi-ico"><BookOpen size={19} /></div></div>
+                <div className="kpi-value">{planoContas.length}</div>
+                <div className="kpi-label">Contas no plano</div>
+                <div className="kpi-sub">plano de contas da empresa</div>
+              </button>
+            </div>
+
+            <div className="charts-row">
+              <div className="chart-card">
+                <h3>Status dos lançamentos</h3>
+                <div className="chart-sub">Distribuição do extrato em processamento nesta sessão</div>
+                {totalLanc === 0 ? (
+                  <div className="empty-state" style={{ padding: '26px 10px' }}>
+                    Nenhum extrato em processamento. Comece pela aba <strong>Extrato</strong>.
+                  </div>
+                ) : (
+                  <>
+                    <div className="hbar-row"><div className="hbar-label">Classificados</div><div className="hbar-track"><div className="hbar-fill green" style={{ width: pct(classif) + '%' }} /></div><div className="hbar-val">{classif}</div></div>
+                    <div className="hbar-row"><div className="hbar-label">Pendências</div><div className="hbar-track"><div className="hbar-fill amber" style={{ width: pct(pendenciasExtrato) + '%' }} /></div><div className="hbar-val">{pendenciasExtrato}</div></div>
+                    <div className="hbar-row"><div className="hbar-label">Manuais</div><div className="hbar-track"><div className="hbar-fill" style={{ width: pct(manuais) + '%' }} /></div><div className="hbar-val">{manuais}</div></div>
+                    <div className="hbar-row"><div className="hbar-label">Duplicados</div><div className="hbar-track"><div className="hbar-fill red" style={{ width: pct(duplicados) + '%' }} /></div><div className="hbar-val">{duplicados}</div></div>
+                  </>
+                )}
+              </div>
+              <div className="chart-card">
+                <h3>Plano de contas por grupo</h3>
+                <div className="chart-sub">Contas cadastradas em cada grupo contábil{empresaAtiva ? ` — ${empresaAtiva.nome}` : ''}</div>
+                {gruposArr.length === 0 ? (
+                  <div className="empty-state" style={{ padding: '26px 10px' }}>
+                    Nenhum plano de contas importado ainda para esta empresa.
+                  </div>
+                ) : (
+                  gruposArr.map(([g, n]) => (
+                    <div className="hbar-row" key={g}>
+                      <div className="hbar-label">{g}</div>
+                      <div className="hbar-track"><div className="hbar-fill" style={{ width: Math.max(4, Math.round((n / maxGrupo) * 100)) + '%' }} /></div>
+                      <div className="hbar-val">{n}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="section-label">Ações rápidas</div>
+            <div className="quick-grid">
+              <button className="quick-card" onClick={() => trocarTab('extrato')}>
+                <div className="q-ico"><Upload size={18} /></div>
+                <div><div className="q-name">Processar extrato</div><div className="q-desc">Importar e classificar lançamentos</div></div>
+              </button>
+              <button className="quick-card" onClick={() => trocarTab('relatorios')}>
+                <div className="q-ico"><BarChart3 size={18} /></div>
+                <div><div className="q-name">Enviar relatório</div><div className="q-desc">Pagamentos e recebimentos da empresa</div></div>
+              </button>
+              <button className="quick-card" onClick={() => trocarTab('importacao')}>
+                <div className="q-ico"><FileText size={18} /></div>
+                <div><div className="q-name">Exportar importação</div><div className="q-desc">Gerar arquivo para o Domínio</div></div>
+              </button>
+              <button className="quick-card" onClick={() => trocarTab('historico')}>
+                <div className="q-ico"><History size={18} /></div>
+                <div><div className="q-name">Ver histórico</div><div className="q-desc">Processamentos anteriores</div></div>
+              </button>
+            </div>
+          </>
+        );
+      })()}
+
       {tab === 'empresas' && (
         <section className="panel">
           <div className={isAdmin ? 'empresas-layout' : ''}>
           <div>
           <div className="row" style={{ marginTop: 0, justifyContent: 'space-between' }}>
             <div>
-              <h2>Empresas</h2>
               <p className="hint" style={{ marginBottom: 0 }}>{empresas.length} empresas cadastradas, cada uma com plano de contas e regras próprios.
                 {!isAdmin && <> Você está como <strong>operador</strong>: só admin cria/edita empresas.</>}
               </p>
@@ -1948,8 +2150,6 @@ export default function Dashboard() {
 
       {tab === 'extrato' && (
         <section className="panel">
-          <h2>Extrato — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
-
           <div className="card">
             <h3>Layout do banco</h3>
             <p className="hint" style={{ marginBottom: 10 }}>Confira a prévia e ajuste as colunas antes de salvar.</p>
@@ -2266,7 +2466,6 @@ export default function Dashboard() {
 
       {tab === 'relatorios' && (
         <section className="panel">
-          <h2>Relatórios financeiros — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           <p className="hint">
             Envie os relatórios que a empresa manda (contas pagas, recebimentos, folha etc.). O site cruza cada lançamento
             do extrato com esses relatórios <strong>por data + valor</strong> e mostra do que se trata o pagamento/recebimento —
@@ -2429,7 +2628,6 @@ export default function Dashboard() {
 
       {tab === 'folha' && (
         <section className="panel">
-          <h2>Folha de pagamento — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           <p className="hint">Envie o PDF gerado pelo sistema de folha: o <strong>Relatório de Líquidos</strong> (nome e valor líquido de cada funcionário) ou o <strong>Extrato Mensal</strong> (completo, com proventos, descontos e férias). O site reconhece os funcionários e guarda os valores — é o que permite identificar no extrato bancário os pagamentos de salário, férias e rescisão, tanto Pix individual quanto pagamento em lote (SISPAG).</p>
 
           <div className="card">
@@ -2561,7 +2759,6 @@ export default function Dashboard() {
 
       {tab === 'regras' && (
         <section className="panel">
-          <h2>Regras — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           <p className="hint">Palavra-chave → conta contábil. Quando mais de uma regra combina, vale a <strong>última da lista</strong>. A conta p/ entradas (opcional) é usada quando o dinheiro entra; vazia, vale a mesma conta dos dois lados.</p>
           <div className="regras-toolbar">
             <div className="search-hero" style={{ margin: 0, flex: '1 1 320px' }}>
@@ -2642,7 +2839,6 @@ export default function Dashboard() {
 
       {tab === 'contas' && (
         <section className="panel">
-          <h2>Plano de contas — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           <div className="stats" style={{ marginTop: 2 }}>
             <div className="stat">{planoContas.length} contas no total</div>
             <div className="stat ok">{planoContas.filter(c => c.tipo === 'A').length} analíticas</div>
@@ -2696,7 +2892,6 @@ export default function Dashboard() {
 
       {tab === 'importacao' && (
         <section className="panel">
-          <h2>Arquivo para importação no Domínio</h2>
           {processedRows.length === 0 ? (
             <div className="empty-state">Processe um extrato na aba EXTRATO primeiro.</div>
           ) : (
@@ -2729,7 +2924,6 @@ export default function Dashboard() {
 
       {tab === 'historico' && (
         <section className="panel">
-          <h2>Histórico de importações — <span style={{ color: 'var(--teal)' }}>{empresaAtiva?.nome}</span></h2>
           {historico.length === 0 ? (
             <div className="empty-state">Nenhuma importação confirmada ainda para esta empresa.</div>
           ) : (
@@ -2770,7 +2964,6 @@ export default function Dashboard() {
         <section className="panel">
           <div className="empresas-layout">
           <div>
-            <h2>Assinantes do sistema</h2>
             <p className="hint">Cada assinante é um escritório com ambiente próprio e isolado: os usuários dele só enxergam as empresas dele. A cobrança é pelo <strong>limite de empresas (CNPJs)</strong>; usuários são ilimitados. Suspender corta o acesso de todos na hora (reversível).</p>
             {assCarregando ? (
               <SkeletonTabela linhas={5} />
@@ -2861,7 +3054,6 @@ export default function Dashboard() {
         <section className="panel">
           <div className="empresas-layout">
           <div>
-            <h2>Gerenciamento de Usuários</h2>
             <p className="hint">Crie logins para a equipe, defina o papel de cada um e limite o acesso por empresa. Usuário desativado perde o acesso na hora.</p>
             {usrCarregando ? (
               <SkeletonTabela linhas={5} />
@@ -2980,6 +3172,8 @@ export default function Dashboard() {
         <div><span className="dot" />Conectado · dados salvos no Supabase, acessíveis por qualquer login autorizado</div>
         <div>Sugestões da IA nunca são aplicadas sem a sua confirmação</div>
       </footer>
+      </div>{/* fim .app */}
+      </div>{/* fim .main-area */}
     </div>
   );
 }

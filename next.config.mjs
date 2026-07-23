@@ -6,5 +6,11 @@ const nextConfig = {
     // rota /api/folha/parse quebra em produção.
     serverComponentsExternalPackages: ['pdfjs-dist'],
   },
+  // quem tiver o endereço antigo salvo nos favoritos cai na página nova
+  async redirects() {
+    return [
+      { source: '/dashboard', destination: '/pagina-inicial', permanent: true },
+    ];
+  },
 };
 export default nextConfig;

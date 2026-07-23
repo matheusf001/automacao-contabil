@@ -35,9 +35,9 @@ export default function LoginPage() {
       setError('Usuário ou senha incorretos.');
       return;
     }
-    // pequena animação de "virada" antes de ir pro dashboard
+    // pequena animação de "virada" antes de ir pra página inicial
     setSaindo(true);
-    setTimeout(() => router.push('/dashboard'), 520);
+    setTimeout(() => router.push('/pagina-inicial'), 520);
   }
 
   return (

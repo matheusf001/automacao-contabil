@@ -29,7 +29,7 @@ export default function RedefinirSenhaPage() {
     setSalvando(false);
     if (error) { setErro('Não deu certo: ' + error.message); return; }
     alert('Senha alterada com sucesso!');
-    router.replace('/dashboard');
+    router.replace('/pagina-inicial');
   }
 
   return (
