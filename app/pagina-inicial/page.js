@@ -226,7 +226,7 @@ export default function PaginaInicial() {
   const [fileNameFolha, setFileNameFolha] = useState('');
   const folhaFileRef = useRef(null);
   const dadosFolhaRef = useRef({ itens: [], funcionarios: [], totais: [], config: null }); // usado no cruzamento com o extrato
-  const [folhaCfgDraft, setFolhaCfgDraft] = useState({ salario: '', ferias: '', rescisao: '', decimo: '' });
+  const [folhaCfgDraft, setFolhaCfgDraft] = useState({ salario: '', ferias: '', rescisao: '', decimo: '', adiantamento: '' });
   const [recentes, setRecentes] = useState([]);
   const [verTodas, setVerTodas] = useState(false);
   const [iaLoading, setIaLoading] = useState(false);
@@ -674,6 +674,7 @@ export default function PaginaInicial() {
 
   function selecionarEmpresa(id) {
     setCurrentEmpresaId(id);
+    setDestEmpresaImport(id); // o destino da importação do plano acompanha a empresa em uso
     existentesCacheRef.current = null;
     manualOverridesRef.current.clear(); // memória de contas manuais é por extrato/empresa
     setProcessedRows([]);
@@ -697,6 +698,23 @@ export default function PaginaInicial() {
     try {
       const ext = file.name.split('.').pop().toLowerCase();
       let text;
+      if (ext === 'pdf') {
+        // PDF do banco: o servidor extrai o texto e converte nos lançamentos
+        // (Sicredi, Santander, Itaú e Bradesco). Mesmo formato do OFX.
+        notify('Lendo o PDF do extrato…', 'info');
+        const fd = new FormData();
+        fd.append('arquivo', file);
+        const res = await fetch('/api/extrato/parse-pdf', { method: 'POST', body: fd });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) { notify(json.error || 'Erro ao ler o PDF do extrato.'); return; }
+        ofxModeRef.current = true; // valores com sinal, colunas fixas — igual ao OFX
+        setExtratoText(json.linhas.join('\n'));
+        setConfirmado(false);
+        existentesCacheRef.current = null;
+        manualOverridesRef.current.clear();
+        notify(`PDF do ${json.nomeBanco} lido: ${json.quantidade} lançamentos. Só clicar em Processar.`, 'success');
+        return;
+      }
       if (ext === 'ofx') {
         // OFX: formato universal dos bancos — não depende de layout de colunas
         const bruto = await file.text();
@@ -987,10 +1005,37 @@ export default function PaginaInicial() {
   const regrasComSintetica = regras.filter(r => r.codigo && isContaSintetica(r.codigo));
 
   // ---------- PLANO DE CONTAS (edição manual, admin) ----------
-  async function addContaManual() {
-    const { error } = await supabase.from('plano_contas').insert({ empresa_id: currentEmpresaId, codigo: 0, classificacao: '', descricao: '', updated_by: userEmail, updated_at: new Date().toISOString() });
-    if (error) { notify('Erro: ' + error.message); return; }
-    loadPlanoContas(currentEmpresaId);
+  // Cadastro de conta nova em janela própria: nome, classificação, código e tipo
+  const [novaContaModal, setNovaContaModal] = useState(null); // null | { descricao, classificacao, codigo, tipo }
+  const [salvandoConta, setSalvandoConta] = useState(false);
+
+  function abrirNovaConta() {
+    const proximoCodigo = planoContas.reduce((m, c) => Math.max(m, parseInt(c.codigo) || 0), 0) + 1;
+    setNovaContaModal({ descricao: '', classificacao: '', codigo: String(proximoCodigo), tipo: 'A' });
+  }
+
+  async function salvarNovaConta() {
+    if (!novaContaModal || salvandoConta) return;
+    const { descricao, classificacao, codigo, tipo } = novaContaModal;
+    const cod = parseInt(codigo);
+    if (!descricao.trim()) { notify('Informe o nome da conta.'); return; }
+    if (!cod || cod <= 0) { notify('Informe o código reduzido (número inteiro maior que zero).'); return; }
+    if (contasPorCodigo.has(String(cod))) { notify(`Já existe uma conta com o código ${cod} nesta empresa — escolha outro.`); return; }
+    if (classificacao.trim() && !/^\d+(\.\d+)*$/.test(classificacao.trim())) { notify('Classificação inválida — use números separados por ponto (ex: 1.1.2.05).'); return; }
+    setSalvandoConta(true);
+    try {
+      const { error } = await supabase.from('plano_contas').insert({
+        empresa_id: currentEmpresaId, codigo: cod, classificacao: classificacao.trim(),
+        descricao: descricao.trim(), tipo,
+        updated_by: userEmail, updated_at: new Date().toISOString(),
+      });
+      if (error) { notify('Erro ao criar a conta: ' + error.message); return; }
+      notify(`Conta ${cod} — ${descricao.trim()} criada!`, 'success');
+      setNovaContaModal(null);
+      loadPlanoContas(currentEmpresaId);
+    } finally {
+      setSalvandoConta(false);
+    }
   }
   async function updateConta(conta, field, value) {
     const patch = { [field]: field === 'codigo' ? (parseInt(value) || 0) : value, updated_by: userEmail, updated_at: new Date().toISOString() };
@@ -1157,6 +1202,7 @@ export default function PaginaInicial() {
         ferias: cfg?.conta_ferias ? `${cfg.conta_ferias} — ${findContaDesc(cfg.conta_ferias)}` : '',
         rescisao: cfg?.conta_rescisao ? `${cfg.conta_rescisao} — ${findContaDesc(cfg.conta_rescisao)}` : '',
         decimo: cfg?.conta_decimo ? `${cfg.conta_decimo} — ${findContaDesc(cfg.conta_decimo)}` : '',
+        adiantamento: cfg?.conta_adiantamento ? `${cfg.conta_adiantamento} — ${findContaDesc(cfg.conta_adiantamento)}` : '',
       });
     } catch (e) {
       console.error(e); // tabelas da folha ainda não criadas no banco — segue sem o cruzamento
@@ -1169,6 +1215,7 @@ export default function PaginaInicial() {
       ['conta_ferias', 'ferias', 'férias'],
       ['conta_rescisao', 'rescisao', 'rescisão'],
       ['conta_decimo', 'decimo', '13º'],
+      ['conta_adiantamento', 'adiantamento', 'adiantamento'],
     ];
     const payload = { empresa_id: currentEmpresaId };
     for (const [coluna, chave, rotulo] of campos) {
@@ -1179,7 +1226,13 @@ export default function PaginaInicial() {
       payload[coluna] = codigo ? parseInt(codigo, 10) : null;
     }
     if (!payload.conta_salario) { notify('Informe pelo menos a conta de salário — as outras usam ela quando vazias.'); return; }
-    const { error } = await supabase.from('folha_config').upsert(payload, { onConflict: 'empresa_id' });
+    let { error } = await supabase.from('folha_config').upsert(payload, { onConflict: 'empresa_id' });
+    if (error && /adiantamento/i.test(error.message)) {
+      // banco ainda sem a coluna nova (script sql/folha_conta_adiantamento.sql não rodado) — salva sem ela
+      const { conta_adiantamento, ...semAdiantamento } = payload;
+      ({ error } = await supabase.from('folha_config').upsert(semAdiantamento, { onConflict: 'empresa_id' }));
+      if (!error) notify('A conta de adiantamento ainda não existe no banco — rode o script sql/folha_conta_adiantamento.sql no Supabase para ativá-la.', 'info');
+    }
     if (error) { notify('Erro ao salvar as contas: ' + error.message); return; }
     await loadDadosFolha(currentEmpresaId);
     flash('salvo ✓');
@@ -1375,15 +1428,41 @@ export default function PaginaInicial() {
         return ref ? { ...r, refRelatorio: ref } : r;
       });
 
+      // Segunda passada de regras, agora sobre a CATEGORIA do relatório financeiro:
+      // o histórico do banco ("PAGAMENTO PIX 123...") muitas vezes não diz nada, mas o
+      // relatório da empresa diz (categoria FRETE, por exemplo). Uma regra com a
+      // palavra-chave FRETE passa a classificar esses lançamentos automaticamente.
+      const comCategoria = comRelatorio.map(r => {
+        if (r.status !== 'sem match' || !r.refRelatorio?.item?.categoria) return r;
+        const textoCategoria = String(r.refRelatorio.item.categoria).toUpperCase();
+        let regraCat = null;
+        for (const rg of regrasAtuais) {
+          if (rg.palavra_chave && textoCategoria.includes(rg.palavra_chave.toUpperCase())) regraCat = rg;
+        }
+        if (!regraCat) return r;
+        const isDebito = r.cd === 'D';
+        const codigo = (!isDebito && regraCat.codigo_recebimento) ? regraCat.codigo_recebimento : regraCat.codigo;
+        if (!codigo || isContaSintetica(codigo)) return r;
+        return {
+          ...r,
+          contaDevedora: isDebito ? codigo : contaBancaria,
+          contaCredora: isDebito ? contaBancaria : codigo,
+          status: 'automatico',
+          origem: 'categoria',
+        };
+      });
+
       // Cruza com a FOLHA DE PAGAMENTO: pagamento individual (nome + líquido),
       // lote SISPAG (total da folha) ou só o nome (vira contexto pra IA).
       // Só classifica sozinho se a conta do de-para estiver configurada e for Analítica.
       const cfgFolha = dadosFolhaRef.current.config;
-      const comFolha = comRelatorio.map(r => {
+      const comFolha = comCategoria.map(r => {
         if (r.status !== 'sem match') return r;
         const refFolha = cruzarComFolha(r, dadosFolhaRef.current);
         if (!refFolha) return r;
-        if (refFolha.tipo === 'funcionario' || refFolha.tipo === 'total') {
+        // 'funcionario'/'total' = salário (líquido bate); 'nome' = adiantamento
+        // (nome reconhecido, valor diferente) — cada um vai pra sua conta.
+        if (refFolha.tipo === 'funcionario' || refFolha.tipo === 'total' || refFolha.tipo === 'nome') {
           const conta = contaParaEvento(cfgFolha, refFolha.evento);
           if (conta && !isContaSintetica(conta)) {
             return { ...r, refFolha, contaDevedora: String(conta), status: 'automatico', origem: 'folha' };
@@ -1638,6 +1717,22 @@ export default function PaginaInicial() {
     ));
   }
 
+  // "Usar sugestão" (similaridade com importações anteriores): aplica a conta
+  // sugerida NA LINHA, na hora — e lembra a escolha se o extrato for reprocessado.
+  function aceitarSugestaoSimilar(idx) {
+    setProcessedRows(prev => prev.map((r, i) => {
+      if (i !== idx || r.status !== 'sem match' || !r.sugestao) return r;
+      if (isContaSintetica(r.sugestao.codigo)) return r; // segurança extra
+      const novo = { ...aplicarContaNaLinha(r, r.sugestao.codigo), origem: 'manual' };
+      if (novo.fingerprint) {
+        manualOverridesRef.current.set(novo.fingerprint, {
+          contaDevedora: novo.contaDevedora, contaCredora: novo.contaCredora,
+        });
+      }
+      return novo;
+    }));
+  }
+
   function aceitarTodasIA() {
     const total = processedRows.filter(r => r.status === 'sem match' && r.sugestaoIA).length;
     if (total === 0) return;
@@ -1712,6 +1807,48 @@ export default function PaginaInicial() {
           onConfirm={(valor) => { setInputModal(null); inputModal.onConfirm(valor); }}
           onClose={() => setInputModal(null)}
         />
+      )}
+      {novaContaModal && (
+        <div className="modal-overlay" onClick={() => !salvandoConta && setNovaContaModal(null)}>
+          <div className="modal-panel" style={{ width: 520 }} onClick={e => e.stopPropagation()}>
+            <h3>Nova conta contábil</h3>
+            <p className="hint">Preencha as informações da nova conta. Ela vale só para <strong>{empresaAtiva?.nome}</strong>.</p>
+            <div className="field-label" style={{ marginTop: 0 }}>Nome da conta</div>
+            <input type="text" style={{ width: '100%' }} autoFocus placeholder="ex: FRETES E CARRETOS"
+              value={novaContaModal.descricao}
+              onChange={e => setNovaContaModal(m => ({ ...m, descricao: e.target.value }))} />
+            <div className="form-grid-2">
+              <div>
+                <div className="field-label">Classificação (opcional)</div>
+                <input type="text" style={{ width: '100%' }} placeholder="ex: 3.1.2.05"
+                  value={novaContaModal.classificacao}
+                  onChange={e => setNovaContaModal(m => ({ ...m, classificacao: e.target.value }))} />
+                {novaContaModal.classificacao.trim() && (
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>Grupo: {grupoOf(novaContaModal.classificacao.trim())}</div>
+                )}
+              </div>
+              <div>
+                <div className="field-label">Código reduzido</div>
+                <input type="number" min="1" style={{ width: '100%' }}
+                  value={novaContaModal.codigo}
+                  onChange={e => setNovaContaModal(m => ({ ...m, codigo: e.target.value }))} />
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5 }}>já sugerido: próximo código livre</div>
+              </div>
+            </div>
+            <div className="field-label">Tipo da conta</div>
+            <select style={{ width: '100%' }} value={novaContaModal.tipo}
+              onChange={e => setNovaContaModal(m => ({ ...m, tipo: e.target.value }))}>
+              <option value="A">Analítica — recebe lançamentos</option>
+              <option value="S">Sintética — só totaliza (não recebe lançamento)</option>
+            </select>
+            <div className="modal-actions">
+              <button className="btn secondary" onClick={() => setNovaContaModal(null)} disabled={salvandoConta}>Cancelar</button>
+              <button className="btn teal" onClick={() => salvarNovaConta()} disabled={salvandoConta || !novaContaModal.descricao.trim()}>
+                {salvandoConta ? (<><span className="spinner" /> Salvando…</>) : 'Salvar conta'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {assModal && (
         <div className="modal-overlay" onClick={() => !assModalSalvando && setAssModal(null)}>
@@ -1923,7 +2060,7 @@ export default function PaginaInicial() {
           </button>
         )}
         {tab === 'contas' && isAdmin && (
-          <button className="btn teal" onClick={() => addContaManual()}>
+          <button className="btn teal" onClick={() => abrirNovaConta()}>
             <Plus size={15} style={{ marginRight: 6, verticalAlign: -2 }} />Nova conta
           </button>
         )}
@@ -2229,13 +2366,13 @@ export default function PaginaInicial() {
             )}
           </div>
 
-          <FilePicker big id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx"
+          <FilePicker big id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx,.pdf"
             fileName={fileNameExtrato}
             titulo="Arraste o extrato aqui ou clique para selecionar"
-            subtitulo="Arquivo direto do banco — conta corrente, conta garantida e aplicações"
-            formatos={['OFX', 'XLS', 'XLSX', 'CSV', 'TXT']}
+            subtitulo="Arquivo direto do banco — PDF lido na hora (Sicredi, Santander, Itaú e Bradesco)"
+            formatos={['PDF', 'OFX', 'XLS', 'XLSX', 'CSV', 'TXT']}
             onFileChange={f => { setFileNameExtrato(f?.name || ''); if (f) handleExtratoFileUpload(f); }} />
-          <p className="hint" style={{ margin: '12px 0 6px' }}>Só tem o extrato em <strong>PDF</strong>? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui — ou cole as linhas do extrato manualmente abaixo, conforme o layout selecionado.</p>
+          <p className="hint" style={{ margin: '12px 0 6px' }}>PDF de outro banco que eu ainda não leio? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui — ou cole as linhas do extrato manualmente abaixo, conforme o layout selecionado.</p>
           <textarea value={extratoText} onChange={e => { setExtratoText(e.target.value); ofxModeRef.current = false; setConfirmado(false); existentesCacheRef.current = null; }}
             placeholder={'01/07/2026\t1250,00\tPIX RECEBIDO\tCLIENTE XYZ LTDA'} style={{ minHeight: 90 }} />
           <div className="row">
@@ -2404,7 +2541,7 @@ export default function PaginaInicial() {
                             r.refFolha.tipo === 'funcionario' ? 'Nome e valor líquido batem com a folha de pagamento importada — classificado automaticamente se as contas da folha estiverem configuradas'
                             : r.refFolha.tipo === 'total' ? 'Valor igual ao total líquido da folha (pagamento em lote / SISPAG)'
                             : r.refFolha.tipo === 'total_suspeito' ? 'Valor igual ao total da folha, mas o histórico não menciona folha/salário — confira antes de aceitar'
-                            : 'Nome de funcionário reconhecido, mas o valor não bate com nenhum líquido da folha (adiantamento? pagamento parcial?)'}>
+                            : 'Nome de funcionário reconhecido com valor diferente do líquido — tratado como ADIANTAMENTO (classifica sozinho se a conta de adiantamento estiver configurada na aba Folha)'}>
                             <Banknote size={11} style={{ verticalAlign: -1.5, marginRight: 4 }} />
                             <strong>folha: </strong>{descreverRefFolha(r.refFolha).slice(0, 90)}
                           </div>
@@ -2434,7 +2571,11 @@ export default function PaginaInicial() {
                             ? <span className="badge ok" title="Conta escolhida manualmente por você nesta linha">✎ manual</span>
                             : r.origem === 'ia'
                               ? <span className="badge ia" title={r.sugestaoIA?.motivo || ''}>✦ IA (aceita por você)</span>
-                              : <span className="badge ok">✔ automatico</span>
+                              : r.origem === 'categoria'
+                                ? <span className="badge ok" title="Classificado pela regra que casou com a categoria do relatório financeiro">✔ categoria do relatório</span>
+                                : r.origem === 'folha'
+                                  ? <span className="badge ok" title="Classificado pelo cruzamento com a folha de pagamento">✔ folha de pagamento</span>
+                                  : <span className="badge ok">✔ automatico</span>
                         )}
                         {r.status === 'sem match' && r.sugestaoIA && (
                           <div>
@@ -2456,13 +2597,21 @@ export default function PaginaInicial() {
                         {r.status === 'sem match' && !r.sugestaoIA && r.sugestao && (
                           <div>
                             <span className="badge warn" style={{ marginBottom: 4, display: 'inline-block' }}>⚠ sem match</span><br />
-                            <span style={{ fontSize: 11, color: 'var(--teal-dark)' }}>
+                            <span style={{ fontSize: 11, color: 'var(--blue-dark)' }}>
                               💡 sugestão: {r.sugestao.codigo} — {findContaDesc(r.sugestao.codigo)} ({Math.round(r.sugestao.score * 100)}% parecido)
-                            </span><br />
-                            <button className="btn secondary" style={{ fontSize: 10.5, padding: '3px 8px', marginTop: 3 }}
-                              onClick={() => { setKeywordDraft(''); setCodigoDraft(`${r.sugestao.codigo} — ${findContaDesc(r.sugestao.codigo)}`); }}>
-                              Usar sugestão
-                            </button>
+                            </span>
+                            <div style={{ marginTop: 4, display: 'flex', gap: 5 }}>
+                              <button className="btn teal" style={{ fontSize: 10.5, padding: '3px 10px' }}
+                                title="Aplica esta conta neste lançamento agora"
+                                onClick={() => aceitarSugestaoSimilar(i)}>
+                                Usar sugestão
+                              </button>
+                              <button className="btn secondary" style={{ fontSize: 10.5, padding: '3px 8px' }}
+                                title="Preenche a conta no cartão 'Criar regra' lá em cima — monte a palavra-chave e salve para valer em todos os meses"
+                                onClick={() => { setKeywordDraft(''); setCodigoDraft(`${r.sugestao.codigo} — ${findContaDesc(r.sugestao.codigo)}`); }}>
+                                Criar regra com esta conta
+                              </button>
+                            </div>
                           </div>
                         )}
                         {r.status === 'duplicado' && <span className="badge warn" style={{ background: '#F1E3E3', color: '#A33' }}>⚠ duplicado</span>}
@@ -2706,9 +2855,9 @@ export default function PaginaInicial() {
 
           <div className="card" style={{ marginTop: 14 }}>
             <h3>Contas contábeis dos pagamentos</h3>
-            <p className="hint" style={{ marginBottom: 10 }}>Quando o site reconhece no extrato um pagamento da folha (nome + valor líquido, ou o total do lote SISPAG), ele lança nestas contas automaticamente. Sem elas, o pagamento só ganha o selo verde de identificação. Férias, rescisão e 13º em branco usam a conta de salário.</p>
+            <p className="hint" style={{ marginBottom: 10 }}>Quando o site reconhece no extrato um pagamento da folha (nome + valor líquido, ou o total do lote SISPAG), ele lança nestas contas automaticamente. Sem elas, o pagamento só ganha o selo verde de identificação. Férias, rescisão e 13º em branco usam a conta de salário. <strong>Adiantamento</strong>: quando o nome do funcionário aparece no extrato com valor <em>diferente</em> do líquido (o pagamento de ~dia 15), o site usa a conta de adiantamento — em branco, não classifica sozinho.</p>
             {(() => {
-              const CAMPOS_CFG = [['salario', 'Salário'], ['ferias', 'Férias'], ['rescisao', 'Rescisão'], ['decimo', '13º salário']];
+              const CAMPOS_CFG = [['salario', 'Salário'], ['adiantamento', 'Adiantamento'], ['ferias', 'Férias'], ['rescisao', 'Rescisão'], ['decimo', '13º salário']];
               return (
                 <>
                   <div className="row" style={{ marginTop: 0, flexWrap: 'wrap' }}>
@@ -2716,7 +2865,7 @@ export default function PaginaInicial() {
                       <div className="field-inline" key={chave}>
                         <label>{rotulo}</label>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <input type="text" list="contas-datalist" style={{ minWidth: 210 }} placeholder={chave === 'salario' ? 'ex: Salários a Pagar' : 'vazio = usa a de salário'}
+                          <input type="text" list="contas-datalist" style={{ minWidth: 210 }} placeholder={chave === 'salario' ? 'ex: Salários a Pagar' : chave === 'adiantamento' ? 'ex: Adiantamento de Salário' : 'vazio = usa a de salário'}
                             value={folhaCfgDraft[chave]} readOnly={!isAdmin}
                             onChange={e => setFolhaCfgDraft(d => ({ ...d, [chave]: e.target.value }))} />
                           {isAdmin && <button className="icon-btn" style={{ width: 26, height: 26 }} title="Buscar conta"
