@@ -65,8 +65,9 @@ button{font-family:inherit;cursor:pointer}
 }
 .sidebar::before{content:"";position:absolute;inset:0;pointer-events:none;
   background:radial-gradient(420px 220px at 20% -5%, rgba(93,139,255,.18), transparent 70%);}
-.sb-head{display:flex;align-items:center;gap:12px;padding:20px 18px 16px;position:relative}
-.sb-logo{height:34px;width:auto;display:block;flex-shrink:0}
+.sb-head{display:flex;align-items:center;justify-content:center;gap:12px;padding:16px 18px 10px;position:relative}
+.sb-logo-img{display:block;width:150px;max-width:100%;height:auto}
+.sb-head .sb-logo-mini{display:none}
 .sb-logo-mini{width:42px;height:42px;border-radius:13px;flex-shrink:0;
   background:linear-gradient(135deg,#2F6BFF,#7C5CFF);
   display:flex;align-items:center;justify-content:center;
@@ -112,7 +113,9 @@ button{font-family:inherit;cursor:pointer}
   .sidebar.collapsed{width:76px}
   .sidebar.collapsed .sb-title,
   .sidebar.collapsed .sb-badge,
+  .sidebar.collapsed .sb-logo-img,
   .sidebar.collapsed .sb-label{display:none}
+  .sidebar.collapsed .sb-head .sb-logo-mini{display:flex}
   .sidebar.collapsed .sb-head{justify-content:center;padding:20px 10px 14px}
   .sidebar.collapsed .sb-section{padding:14px 0 6px;text-align:center;letter-spacing:0;overflow:hidden;white-space:nowrap;font-size:8.5px}
   .sidebar.collapsed .sb-item{justify-content:center;padding:11px 0;gap:0}

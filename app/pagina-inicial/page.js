@@ -30,7 +30,14 @@ function FilePicker({ id, inputRef, accept, fileName, onFileChange, big, titulo,
     e.preventDefault();
     setArrastando(false);
     const f = e.dataTransfer?.files?.[0];
-    if (f) onFileChange(f);
+    if (!f) return;
+    // Coloca o arquivo arrastado DENTRO do input escondido: quem lê o arquivo
+    // pelo inputRef (plano de contas, folha) passa a enxergá-lo igualzinho a
+    // quando se clica em "Escolher arquivo". Sem isso, só o nome aparecia.
+    try {
+      if (inputRef?.current) inputRef.current.files = e.dataTransfer.files;
+    } catch { /* navegador antigo: segue só com o onFileChange */ }
+    onFileChange(f);
   }
   const dragProps = {
     onDragOver: e => { e.preventDefault(); setArrastando(true); },
@@ -898,6 +905,26 @@ export default function PaginaInicial() {
   }
 
   // ---------- IMPORTAR PLANO DE CONTAS (admin) ----------
+  const [planoImportModo, setPlanoImportModo] = useState('substituir'); // 'substituir' | 'complementar'
+  const [planoMergeModal, setPlanoMergeModal] = useState(null); // { novas, jaExistem, destEmp } — conferência do modo complementar
+  const [planoMergeSalvando, setPlanoMergeSalvando] = useState(false);
+
+  function limparEntradaPlano() {
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    setFileNamePlano('');
+    if (pasteRef.current) pasteRef.current.value = '';
+  }
+
+  async function inserirContasPlano(contas, destino) {
+    const chunkSize = 500;
+    for (let i = 0; i < contas.length; i += chunkSize) {
+      const chunk = contas.slice(i, i + chunkSize).map(c => ({ ...c, empresa_id: destino, updated_by: userEmail, updated_at: new Date().toISOString() }));
+      const { error } = await supabase.from('plano_contas').insert(chunk);
+      if (error) return error;
+    }
+    return null;
+  }
+
   async function importarPlano() {
     setImportStatus('');
     let novoPlano = [];
@@ -919,23 +946,53 @@ export default function PaginaInicial() {
       return;
     }
     const destEmp = empresas.find(e => e.id === destEmpresaImport);
+
+    // MODO COMPLEMENTAR: compara com o plano que já existe e só adiciona o que falta
+    if (planoImportModo === 'complementar') {
+      setImportStatus('Comparando com o plano atual…');
+      const { data: atuais, error } = await supabase.from('plano_contas').select('codigo').eq('empresa_id', destEmpresaImport);
+      if (error) { setImportStatus('Erro ao ler o plano atual: ' + error.message); return; }
+      const codigosAtuais = new Set((atuais || []).map(c => String(c.codigo)));
+      const novas = novoPlano.filter(c => !codigosAtuais.has(String(c.codigo)));
+      const jaExistem = novoPlano.length - novas.length;
+      if (novas.length === 0) {
+        setImportStatus(`Nada a adicionar: as ${novoPlano.length} contas do arquivo já existem no plano de "${destEmp?.nome}".`);
+        return;
+      }
+      setImportStatus('');
+      setPlanoMergeModal({ novas, jaExistem, destEmp });
+      return;
+    }
+
+    // MODO SUBSTITUIR: apaga o plano atual e importa o arquivo inteiro
     if (!confirm(`Importar ${novoPlano.length} contas para "${destEmp?.nome}"? Isso substitui o plano de contas atual dessa empresa.`)) return;
 
     setImportStatus('Importando…');
     const { error: delError } = await supabase.from('plano_contas').delete().eq('empresa_id', destEmpresaImport);
     if (delError) { setImportStatus('Erro ao limpar plano anterior: ' + delError.message); return; }
 
-    const chunkSize = 500;
-    for (let i = 0; i < novoPlano.length; i += chunkSize) {
-      const chunk = novoPlano.slice(i, i + chunkSize).map(c => ({ ...c, empresa_id: destEmpresaImport, updated_by: userEmail, updated_at: new Date().toISOString() }));
-      const { error } = await supabase.from('plano_contas').insert(chunk);
-      if (error) { setImportStatus('Erro ao importar: ' + error.message); return; }
-    }
+    const insError = await inserirContasPlano(novoPlano, destEmpresaImport);
+    if (insError) { setImportStatus('Erro ao importar: ' + insError.message); return; }
     setImportStatus(`✔ ${novoPlano.length} contas importadas com sucesso.`);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    setFileNamePlano('');
-    if (pasteRef.current) pasteRef.current.value = '';
+    limparEntradaPlano();
     if (destEmpresaImport === currentEmpresaId) loadPlanoContas(currentEmpresaId);
+  }
+
+  async function confirmarPlanoComplementar() {
+    if (!planoMergeModal || planoMergeSalvando) return;
+    setPlanoMergeSalvando(true);
+    try {
+      const { novas } = planoMergeModal;
+      const insError = await inserirContasPlano(novas, destEmpresaImport);
+      if (insError) { notify('Erro ao adicionar as contas: ' + insError.message); return; }
+      setImportStatus(`✔ ${novas.length} conta(s) nova(s) adicionadas — as que já existiam não foram tocadas.`);
+      notify(`${novas.length} conta(s) adicionadas ao plano de "${planoMergeModal.destEmp?.nome}".`, 'success');
+      setPlanoMergeModal(null);
+      limparEntradaPlano();
+      if (destEmpresaImport === currentEmpresaId) loadPlanoContas(currentEmpresaId);
+    } finally {
+      setPlanoMergeSalvando(false);
+    }
   }
 
   // ---------- REGRAS ----------
@@ -1541,7 +1598,9 @@ export default function PaginaInicial() {
 
     setConfirmando(true);
     try {
-      const { data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert({
+      // período do extrato: menor e maior data entre os lançamentos
+      const datasISO = processedRows.map(r => normalizarDataISO(r.data)).filter(Boolean).sort();
+      const cabecalho = {
         empresa_id: currentEmpresaId,
         layout_id: currentLayoutId,
         conta_codigo: contaBancaria,
@@ -1550,7 +1609,15 @@ export default function PaginaInicial() {
         total_sem_match: processedRows.filter(r => r.status === 'sem match').length,
         total_duplicados: processedRows.filter(r => r.status === 'duplicado').length,
         processado_por: userEmail,
-      }).select().single();
+        periodo_inicio: datasISO[0] || null,
+        periodo_fim: datasISO[datasISO.length - 1] || null,
+      };
+      let { data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert(cabecalho).select().single();
+      if (errExtrato && /periodo/i.test(errExtrato.message)) {
+        // banco ainda sem as colunas novas (script sql/historico_periodo.sql não rodado) — salva sem o período
+        const { periodo_inicio, periodo_fim, ...semPeriodo } = cabecalho;
+        ({ data: extrato, error: errExtrato } = await supabase.from('extratos_processados').insert(semPeriodo).select().single());
+      }
       if (errExtrato) { notify('Erro ao salvar histórico: ' + errExtrato.message); return; }
 
       // Tira duplicados DENTRO do próprio lote: a chave única do banco é
@@ -1748,7 +1815,15 @@ export default function PaginaInicial() {
       if (onlyMatched && r.status !== 'automatico') return false;
       return true;
     });
-    const nomeBase = (onlyMatched ? 'importacao_classificados_' : 'importacao_') + currentEmpresaId;
+    // nome do arquivo: empresa + período dos lançamentos (ex.: importacao_WCN_COMERCIO_01-06-2026_a_30-06-2026.txt)
+    const nomeEmpresa = (empresaAtiva?.nome || 'empresa')
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .trim().replace(/\s+/g, '_').slice(0, 40);
+    const datasISO = linhas.map(r => normalizarDataISO(r.data)).filter(Boolean).sort();
+    const periodo = datasISO.length
+      ? '_' + fmtISOparaBR(datasISO[0]).replace(/\//g, '-') + '_a_' + fmtISOparaBR(datasISO[datasISO.length - 1]).replace(/\//g, '-')
+      : '';
+    const nomeBase = (onlyMatched ? 'importacao_classificados_' : 'importacao_') + nomeEmpresa + periodo;
     if (formato === 'txt') {
       // .txt pro Domínio: sem cabeçalho, sem aspas, sem coluna de status, separado por ";" e em ANSI
       const txt = linhas.map(r => {
@@ -1807,6 +1882,43 @@ export default function PaginaInicial() {
           onConfirm={(valor) => { setInputModal(null); inputModal.onConfirm(valor); }}
           onClose={() => setInputModal(null)}
         />
+      )}
+      {planoMergeModal && (
+        <div className="modal-overlay" onClick={() => !planoMergeSalvando && setPlanoMergeModal(null)}>
+          <div className="modal-panel" style={{ width: 620 }} onClick={e => e.stopPropagation()}>
+            <h3>Complementar plano de contas</h3>
+            <p className="hint">
+              Comparação com o plano de <strong>{planoMergeModal.destEmp?.nome}</strong>:{' '}
+              <strong>{planoMergeModal.jaExistem}</strong> conta(s) do arquivo já existem (ficam como estão) e{' '}
+              <strong style={{ color: 'var(--blue-dark)' }}>{planoMergeModal.novas.length}</strong> são novas.
+              Confira abaixo o que será adicionado — nada é apagado.
+            </p>
+            <div className="table-wrap" style={{ maxHeight: 300, marginTop: 6 }}>
+              <table>
+                <thead><tr><th>CÓDIGO</th><th>CLASSIFICAÇÃO</th><th>DESCRIÇÃO</th><th>TIPO</th></tr></thead>
+                <tbody>
+                  {planoMergeModal.novas.slice(0, 400).map((c, i) => (
+                    <tr key={i}>
+                      <td className="mono">{c.codigo}</td>
+                      <td className="mono">{c.classificacao || '—'}</td>
+                      <td>{c.descricao}</td>
+                      <td>{c.tipo === 'S' ? <span className="badge warn">Sintética</span> : c.tipo === 'A' ? <span className="badge ok">Analítica</span> : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {planoMergeModal.novas.length > 400 && (
+              <p className="hint" style={{ marginTop: 8 }}>Mostrando as 400 primeiras — todas as {planoMergeModal.novas.length} serão adicionadas.</p>
+            )}
+            <div className="modal-actions">
+              <button className="btn secondary" onClick={() => setPlanoMergeModal(null)} disabled={planoMergeSalvando}>Cancelar</button>
+              <button className="btn teal" onClick={() => confirmarPlanoComplementar()} disabled={planoMergeSalvando}>
+                {planoMergeSalvando ? (<><span className="spinner" /> Adicionando…</>) : `Adicionar ${planoMergeModal.novas.length} conta(s)`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {novaContaModal && (
         <div className="modal-overlay" onClick={() => !salvandoConta && setNovaContaModal(null)}>
@@ -1969,11 +2081,8 @@ export default function PaginaInicial() {
       {/* ===== MENU LATERAL (sidebar) ===== */}
       <aside className={'sidebar' + (menuRecolhido ? ' collapsed' : '') + (menuMobileAberto ? ' mobile-open' : '')}>
         <div className="sb-head">
+          <img src="/logo-branca.png" alt="AutoContax" className="sb-logo-img" />
           <div className="sb-logo-mini">A</div>
-          <div className="sb-title">
-            <div className="name">AutoContax</div>
-            <div className="desc">Automação contábil</div>
-          </div>
         </div>
         <nav className="sb-nav">
           {MENU_SECOES.map(sec => {
@@ -2282,13 +2391,20 @@ export default function PaginaInicial() {
               <select style={{ width: '100%' }} value={destEmpresaImport || ''} onChange={e => setDestEmpresaImport(e.target.value)}>
                 {empresas.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
               </select>
+              <div className="field-label">Modo de importação</div>
+              <select style={{ width: '100%' }} value={planoImportModo} onChange={e => setPlanoImportModo(e.target.value)}>
+                <option value="substituir">Substituir o plano inteiro (apaga o atual e importa)</option>
+                <option value="complementar">Complementar — só adiciona as contas que faltam</option>
+              </select>
               <div className="field-label">Importação de arquivo</div>
               <FilePicker id="file-plano-contas" inputRef={fileInputRef} accept=".xls,.xlsx,.csv,.txt"
                 fileName={fileNamePlano} onFileChange={f => setFileNamePlano(f?.name || '')} />
               <div className="field-label">Entrada manual (CSV)</div>
               <textarea ref={pasteRef} placeholder={'7;1.1.1.02;BANCOS CONTA MOVIMENTO;S\n8;1.1.1.02.001;BANCO DO BRASIL;A'} style={{ minHeight: 90 }} />
               <div className="row">
-                <button className="btn teal full" onClick={importarPlano}>Processar e Substituir Plano</button>
+                <button className="btn teal full" onClick={() => importarPlano()}>
+                  {planoImportModo === 'substituir' ? 'Processar e Substituir Plano' : 'Comparar e Adicionar as que Faltam'}
+                </button>
               </div>
               {importStatus && <div style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: 8 }}>{importStatus}</div>}
             </div>
@@ -3164,7 +3280,10 @@ export default function PaginaInicial() {
                   const layoutNome = layouts.find(l => String(l.id) === String(h.layout_id))?.nome || '—';
                   return (
                     <div key={h.id} className={'tl-item ' + ((h.total_sem_match || 0) > 0 ? 'warn' : 'ok')}>
-                      <div className="tl-title">Importação confirmada — {h.total_lancamentos} lançamento(s)</div>
+                      <div className="tl-title">
+                        Importação confirmada — {h.total_lancamentos} lançamento(s)
+                        {h.periodo_inicio && <span style={{ fontWeight: 600, color: 'var(--blue-dark)' }}> · período {fmtISOparaBR(h.periodo_inicio)} a {fmtISOparaBR(h.periodo_fim)}</span>}
+                      </div>
                       <div className="tl-meta">{fmtData(h.processado_em)} · {h.processado_por}</div>
                       <div className="tl-desc">
                         {h.total_classificados} classificados · {h.total_sem_match} sem correspondência · {h.total_duplicados} duplicados · layout {layoutNome} · conta {h.conta_codigo}
