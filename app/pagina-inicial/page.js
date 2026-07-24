@@ -2369,7 +2369,7 @@ export default function PaginaInicial() {
           <FilePicker big id="file-extrato" inputRef={extratoFileInputRef} accept=".xls,.xlsx,.csv,.txt,.ofx,.pdf"
             fileName={fileNameExtrato}
             titulo="Arraste o extrato aqui ou clique para selecionar"
-            subtitulo="Arquivo direto do banco — PDF lido na hora (Sicredi, Santander, Itaú e Bradesco)"
+            subtitulo="Arquivo direto do banco — PDF lido na hora (Banco do Brasil, Sicredi, Santander, Itaú e Bradesco)"
             formatos={['PDF', 'OFX', 'XLS', 'XLSX', 'CSV', 'TXT']}
             onFileChange={f => { setFileNameExtrato(f?.name || ''); if (f) handleExtratoFileUpload(f); }} />
           <p className="hint" style={{ margin: '12px 0 6px' }}>PDF de outro banco que eu ainda não leio? Converta grátis no <a href="https://www.ofxfacil.com.br/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--blue)', fontWeight: 600 }}>OFX Fácil ↗</a> e envie o .ofx aqui — ou cole as linhas do extrato manualmente abaixo, conforme o layout selecionado.</p>
